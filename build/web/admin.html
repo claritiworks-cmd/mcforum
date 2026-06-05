@@ -1,0 +1,502 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MC forum 管理ダッシュボード</title>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&family=Noto+Sans+JP:wght@300;400;500;700&display=swap" rel="stylesheet">
+<script type="module">
+  import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.7.0/firebase-app.js';
+  import { getFirestore, collection, getDocs, doc, updateDoc, query, orderBy, getDoc } from 'https://www.gstatic.com/firebasejs/10.7.0/firebase-firestore.js';
+  import { getAuth, onAuthStateChanged } from 'https://www.gstatic.com/firebasejs/10.7.0/firebase-auth.js';
+
+  const firebaseConfig = {
+    apiKey: "AIzaSyBwxKe-rthrvzySV_ZWuCUjGbjJsB1wv-c",
+    authDomain: "mcforum-prod.firebaseapp.com",
+    projectId: "mcforum-prod",
+    storageBucket: "mcforum-prod.firebasestorage.app",
+    messagingSenderId: "190588256167",
+    appId: "1:190588256167:web:fde35fc64d0d99bb734082"
+  };
+
+  const ADMIN_UID = 'LNZHy6qDl9WyeKiF0MNo0rDkh0w1';
+
+  const app = initializeApp(firebaseConfig);
+  const db = getFirestore(app);
+  const auth = getAuth(app);
+
+  let currentTab = 'overview';
+  let allUsers = [];
+  let allTopics = [];
+  let allPredictions = [];
+
+  async function loadData() {
+    showLoading(true);
+    try {
+      const [usersSnap, topicsSnap, predsSnap] = await Promise.all([
+        getDocs(collection(db, 'users')),
+        getDocs(query(collection(db, 'topics'), orderBy('createdAt', 'desc'))),
+        getDocs(collection(db, 'predictions'))
+      ]);
+      allUsers = usersSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+      allTopics = topicsSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+      allPredictions = predsSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+      renderAll();
+    } catch(e) {
+      console.error(e);
+      showError('データの読み込みに失敗しました: ' + e.message);
+    }
+    showLoading(false);
+  }
+
+  function renderAll() {
+    renderOverview();
+    renderUsers();
+    renderTopics();
+  }
+
+  function renderOverview() {
+    const totalUsers = allUsers.length;
+    const totalPredictions = allPredictions.length;
+    const resolvedTopics = allTopics.filter(t => t.resolved).length;
+    const totalTopics = allTopics.length;
+    const avgInfluence = allUsers.length > 0
+      ? (allUsers.reduce((s, u) => s + (u.influence_score || 0), 0) / allUsers.length).toFixed(1)
+      : 0;
+
+    document.getElementById('stat-users').textContent = totalUsers;
+    document.getElementById('stat-predictions').textContent = totalPredictions;
+    document.getElementById('stat-topics').textContent = totalTopics;
+    document.getElementById('stat-resolved').textContent = resolvedTopics;
+    document.getElementById('stat-avg-influence').textContent = avgInfluence;
+
+    // カテゴリ別分布
+    const catCounts = {};
+    allPredictions.forEach(p => {
+      const cat = p.category || '不明';
+      catCounts[cat] = (catCounts[cat] || 0) + 1;
+    });
+    const catHtml = Object.entries(catCounts)
+      .sort((a,b) => b[1] - a[1])
+      .map(([cat, count]) => {
+        const pct = totalPredictions > 0 ? ((count / totalPredictions) * 100).toFixed(1) : 0;
+        return `
+          <div class="cat-row">
+            <span class="cat-name">${cat}</span>
+            <div class="cat-bar-wrap">
+              <div class="cat-bar" style="width:${pct}%"></div>
+            </div>
+            <span class="cat-count">${count}件 (${pct}%)</span>
+          </div>`;
+      }).join('');
+    document.getElementById('cat-chart').innerHTML = catHtml || '<p class="empty">データなし</p>';
+
+    // トップ予測者
+    const topUsers = [...allUsers]
+      .filter(u => u.influence_score > 0)
+      .sort((a,b) => (b.influence_score || 0) - (a.influence_score || 0))
+      .slice(0, 5);
+    const topUsersHtml = topUsers.map((u, i) => `
+      <div class="top-user-row">
+        <span class="rank">#${i+1}</span>
+        <div class="avatar" style="background:${u.color || '#3b5bdb'}">${(u.name || '?')[0].toUpperCase()}</div>
+        <div class="user-info">
+          <span class="name">${u.name || '不明'}</span>
+          <span class="tags">${(u.expertise || []).slice(0,2).join(' · ')}</span>
+        </div>
+        <span class="score">${(u.influence_score || 0).toFixed(1)}pt</span>
+      </div>`).join('');
+    document.getElementById('top-users').innerHTML = topUsersHtml || '<p class="empty">データなし</p>';
+  }
+
+  function renderUsers() {
+    const sorted = [...allUsers].sort((a,b) => (b.influence_score||0) - (a.influence_score||0));
+    const html = sorted.map(u => {
+      const badge = getBadge(u.influence_score || 0);
+      const accBycat = u.accuracy_by_category || {};
+      const catTags = (u.expertise || []).map(e => `<span class="tag">${e}</span>`).join('');
+      const totalVotes = u.totalVotes || 0;
+      const influenceScore = (u.influence_score || 0).toFixed(1);
+
+      let accuracyRows = '';
+      Object.entries(accBycat).forEach(([cat, data]) => {
+        const total = data.total || 0;
+        const correct = data.correct || 0;
+        const rate = total > 0 ? ((correct / total) * 100).toFixed(0) : 0;
+        const color = rate >= 70 ? '#0ca678' : rate >= 50 ? '#f59f00' : '#e8590c';
+        accuracyRows += `
+          <div class="acc-row">
+            <span>${cat}</span>
+            <span style="color:${color};font-weight:700">${rate}% (${correct}/${total})</span>
+          </div>`;
+      });
+
+      return `
+        <div class="user-card">
+          <div class="user-card-header">
+            <div class="avatar-lg" style="background:${u.color || '#3b5bdb'}">${(u.name||'?')[0].toUpperCase()}</div>
+            <div class="user-meta">
+              <div class="user-name">${u.name || '不明'} <span class="badge ${badge.cls}">${badge.label}</span></div>
+              <div class="user-id">${u.id}</div>
+              <div class="user-tags">${catTags}</div>
+            </div>
+            <div class="user-stats">
+              <div class="stat-item"><span class="stat-val">${totalVotes}</span><span class="stat-lbl">予測数</span></div>
+              <div class="stat-item"><span class="stat-val" style="color:#3b5bdb">${influenceScore}</span><span class="stat-lbl">影響力</span></div>
+              <div class="stat-item"><span class="stat-val">${u.points || 0}pt</span><span class="stat-lbl">ポイント</span></div>
+            </div>
+          </div>
+          ${accuracyRows ? `<div class="acc-grid">${accuracyRows}</div>` : ''}
+        </div>`;
+    }).join('');
+    document.getElementById('users-list').innerHTML = html || '<p class="empty">ユーザーなし</p>';
+  }
+
+  function renderTopics() {
+    const html = allTopics.map(t => {
+      const total = (t.yesCount || 0) + (t.noCount || 0);
+      const yesPct = total > 0 ? ((t.yesCount || 0) / total * 100).toFixed(0) : 50;
+      const noPct = total > 0 ? ((t.noCount || 0) / total * 100).toFixed(0) : 50;
+
+      // 重み付きスコアを計算
+      const topicPreds = allPredictions.filter(p => p.topicId === t.id);
+      let weightedYes = 0, weightedTotal = 0;
+      topicPreds.forEach(p => {
+        const user = allUsers.find(u => u.id === p.uid);
+        const weight = user?.influence_score > 0 ? user.influence_score : 1;
+        weightedTotal += weight;
+        if (p.prediction_value === 'yes') weightedYes += weight;
+      });
+      const weightedPct = weightedTotal > 0 ? (weightedYes / weightedTotal * 100).toFixed(0) : yesPct;
+
+      const statusBadge = t.resolved
+        ? `<span class="status-badge resolved">${t.actualResult === 'yes' ? '✓ YES的中' : '✓ NO的中'}</span>`
+        : `<span class="status-badge pending">判定待ち</span>`;
+
+      const actionBtns = !t.resolved ? `
+        <div class="action-btns">
+          <button class="btn-yes" onclick="resolveTopicAdmin('${t.id}', 'yes')">YES 的中</button>
+          <button class="btn-no" onclick="resolveTopicAdmin('${t.id}', 'no')">NO 的中</button>
+        </div>` : '';
+
+      return `
+        <div class="topic-card ${t.resolved ? 'resolved' : ''}">
+          <div class="topic-header">
+            <span class="topic-cat">${t.category || ''}</span>
+            ${statusBadge}
+            ${t.sponsored ? '<span class="status-badge sponsored">SPONSORED</span>' : ''}
+          </div>
+          <div class="topic-q">${t.question}</div>
+          <div class="topic-meta">
+            <span>投稿者: ${t.authorName || '不明'}</span>
+            <span>締切: ${t.deadline || ''}</span>
+            <span>予測数: ${total}</span>
+            <span style="color:#3b5bdb">影響力: ${(t.authorInfluenceScore||0).toFixed(1)}</span>
+          </div>
+          <div class="vote-bars">
+            <div class="vote-bar-row">
+              <span class="vote-lbl yes">YES</span>
+              <div class="vote-bar-wrap">
+                <div class="vote-bar-fill yes" style="width:${yesPct}%"></div>
+              </div>
+              <span class="vote-pct">${yesPct}%</span>
+            </div>
+            <div class="vote-bar-row">
+              <span class="vote-lbl no">NO</span>
+              <div class="vote-bar-wrap">
+                <div class="vote-bar-fill no" style="width:${noPct}%"></div>
+              </div>
+              <span class="vote-pct">${noPct}%</span>
+            </div>
+            <div class="vote-bar-row weighted">
+              <span class="vote-lbl weighted">重み付き YES</span>
+              <div class="vote-bar-wrap">
+                <div class="vote-bar-fill weighted" style="width:${weightedPct}%"></div>
+              </div>
+              <span class="vote-pct weighted">${weightedPct}%</span>
+            </div>
+          </div>
+          ${actionBtns}
+        </div>`;
+    }).join('');
+    document.getElementById('topics-list').innerHTML = html || '<p class="empty">トピックなし</p>';
+  }
+
+  window.resolveTopicAdmin = async function(topicId, result) {
+    if (!confirm(`このトピックの結果を「${result.toUpperCase()}が的中」として確定しますか？`)) return;
+    try {
+      // トピックを更新
+      await updateDoc(doc(db, 'topics', topicId), {
+        resolved: true, actualResult: result
+      });
+
+      // 該当トピックのpredictionsを更新してスコア計算
+      const topic = allTopics.find(t => t.id === topicId);
+      const preds = allPredictions.filter(p => p.topicId === topicId);
+
+      for (const pred of preds) {
+        const uid = pred.uid;
+        if (!uid) continue;
+        const vote = pred.prediction_value;
+        const category = pred.category || topic?.category || '';
+        const isCorrect = vote === result;
+
+        await updateDoc(doc(db, 'predictions', pred.id), { resolved: true });
+
+        const userRef = doc(db, 'users', uid);
+        const userDoc = await getDoc(userRef);
+        const userData = userDoc.data();
+        if (!userData) continue;
+
+        const acc = { ...userData.accuracy_by_category || {} };
+        const catData = { correct: 0, total: 0, ...(acc[category] || {}) };
+        catData.total += 1;
+        if (isCorrect) catData.correct += 1;
+        acc[category] = catData;
+
+        let totalCorrect = 0, totalAll = 0;
+        Object.values(acc).forEach(c => {
+          totalCorrect += c.correct || 0;
+          totalAll += c.total || 0;
+        });
+        const accuracy = totalAll > 0 ? totalCorrect / totalAll : 0;
+        const influenceScore = accuracy * (1 + totalAll * 0.1) * 100;
+
+        await updateDoc(userRef, {
+          accuracy_by_category: acc,
+          influence_score: influenceScore
+        });
+      }
+
+      alert('✅ 結果を確定しました！');
+      loadData();
+    } catch(e) {
+      alert('エラー: ' + e.message);
+    }
+  };
+
+  function getBadge(score) {
+    if (score >= 100) return { label: '🏆 Top予測者', cls: 'badge-gold' };
+    if (score >= 50) return { label: '⭐ 実績あり', cls: 'badge-silver' };
+    if (score > 0) return { label: '📈 成長中', cls: 'badge-blue' };
+    return { label: '🆕 新規', cls: 'badge-gray' };
+  }
+
+  function showLoading(v) {
+    document.getElementById('loading').style.display = v ? 'flex' : 'none';
+  }
+
+  function showError(msg) {
+    document.getElementById('error-msg').textContent = msg;
+    document.getElementById('error-msg').style.display = 'block';
+  }
+
+  window.switchTab = function(tab) {
+    currentTab = tab;
+    document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+    document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+    document.querySelector(`[data-tab="${tab}"]`).classList.add('active');
+    document.getElementById(`tab-${tab}`).classList.add('active');
+  };
+
+  onAuthStateChanged(auth, user => {
+    if (user && user.uid === ADMIN_UID) {
+      document.getElementById('auth-gate').style.display = 'none';
+      document.getElementById('dashboard').style.display = 'block';
+      loadData();
+    } else if (user) {
+      document.getElementById('auth-gate').innerHTML = '<p style="color:#e8590c;font-size:16px;text-align:center;padding:40px">管理者権限がありません</p>';
+    }
+  });
+</script>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+:root{
+  --bg:#0d0f1a;--card:#141728;--card2:#1a1e35;--border:#252a45;
+  --text:#e8ecf8;--soft:#8892b0;--faint:#4a5278;
+  --blue:#3b5bdb;--green:#0ca678;--red:#e8590c;--gold:#f59f00;
+  --pur:#7048e8;
+}
+body{background:var(--bg);color:var(--text);font-family:'Noto Sans JP','Space Grotesk',sans-serif;min-height:100vh}
+
+/* HEADER */
+.header{background:var(--card);border-bottom:1px solid var(--border);padding:16px 24px;display:flex;align-items:center;gap:12px;position:sticky;top:0;z-index:100}
+.logo{width:32px;height:32px;border-radius:8px;background:linear-gradient(135deg,var(--blue),#5c7cfa);display:flex;align-items:center;justify-content:center}
+.logo svg{width:18px;height:18px}
+.header-title{font-size:16px;font-weight:700;letter-spacing:-.3px}
+.header-sub{font-size:11px;color:var(--soft);margin-left:auto}
+.refresh-btn{padding:7px 16px;background:var(--blue);color:#fff;border:none;border-radius:8px;font-size:12px;font-weight:600;cursor:pointer}
+.refresh-btn:hover{background:#4c6ef5}
+
+/* TABS */
+.tabs{display:flex;gap:4px;padding:16px 24px 0;background:var(--card);border-bottom:1px solid var(--border)}
+.tab-btn{padding:10px 20px;border:none;background:transparent;color:var(--soft);font-size:13px;font-weight:600;cursor:pointer;border-bottom:2px solid transparent;margin-bottom:-1px;transition:all .2s}
+.tab-btn:hover{color:var(--text)}
+.tab-btn.active{color:var(--blue);border-bottom-color:var(--blue)}
+
+/* LAYOUT */
+.wrap{max-width:1200px;margin:0 auto;padding:24px}
+.tab-content{display:none}
+.tab-content.active{display:block}
+
+/* STATS GRID */
+.stats-grid{display:grid;grid-template-columns:repeat(5,1fr);gap:12px;margin-bottom:24px}
+.stat-card{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:16px;text-align:center}
+.stat-card .val{font-size:28px;font-weight:800;color:var(--blue);font-family:'Space Grotesk'}
+.stat-card .lbl{font-size:11px;color:var(--soft);margin-top:4px}
+
+/* GRID 2COL */
+.grid-2{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:24px}
+.panel{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:20px}
+.panel-title{font-size:13px;font-weight:700;color:var(--soft);letter-spacing:.5px;text-transform:uppercase;margin-bottom:16px}
+
+/* CAT CHART */
+.cat-row{display:flex;align-items:center;gap:10px;margin-bottom:10px}
+.cat-name{font-size:11px;min-width:120px;color:var(--text)}
+.cat-bar-wrap{flex:1;height:8px;background:var(--border);border-radius:4px;overflow:hidden}
+.cat-bar{height:100%;background:linear-gradient(90deg,var(--blue),var(--pur));border-radius:4px;transition:width .6s}
+.cat-count{font-size:10px;color:var(--soft);min-width:80px;text-align:right}
+
+/* TOP USERS */
+.top-user-row{display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--border)}
+.top-user-row:last-child{border-bottom:none}
+.rank{font-size:13px;font-weight:800;color:var(--faint);min-width:24px}
+.avatar{width:32px;height:32px;border-radius:50%;display:flex;align-items:center;justify-content:center;color:#fff;font-weight:700;font-size:13px;flex-shrink:0}
+.avatar-lg{width:48px;height:48px;border-radius:50%;display:flex;align-items:center;justify-content:center;color:#fff;font-weight:700;font-size:20px;flex-shrink:0}
+.user-info{flex:1}
+.user-info .name{font-size:12px;font-weight:700;display:block}
+.user-info .tags{font-size:10px;color:var(--soft)}
+.score{font-size:14px;font-weight:800;color:var(--gold)}
+
+/* USER CARDS */
+.user-card{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:18px;margin-bottom:12px}
+.user-card-header{display:flex;align-items:flex-start;gap:14px}
+.user-meta{flex:1}
+.user-name{font-size:15px;font-weight:800;margin-bottom:4px}
+.user-id{font-size:10px;color:var(--faint);margin-bottom:6px;font-family:'Space Grotesk'}
+.user-tags{display:flex;flex-wrap:wrap;gap:5px}
+.tag{font-size:10px;padding:2px 8px;border-radius:4px;background:rgba(59,91,219,.15);color:#8ab4f8;font-weight:600}
+.user-stats{display:flex;gap:16px;flex-shrink:0}
+.stat-item{text-align:center}
+.stat-val{display:block;font-size:18px;font-weight:800;font-family:'Space Grotesk'}
+.stat-lbl{display:block;font-size:10px;color:var(--soft)}
+.acc-grid{margin-top:12px;padding-top:12px;border-top:1px solid var(--border);display:grid;grid-template-columns:1fr 1fr;gap:6px}
+.acc-row{display:flex;justify-content:space-between;font-size:11px;color:var(--soft)}
+
+/* BADGES */
+.badge{font-size:9px;font-weight:700;padding:2px 7px;border-radius:4px;margin-left:6px}
+.badge-gold{background:rgba(245,159,0,.2);color:var(--gold)}
+.badge-silver{background:rgba(12,166,120,.2);color:var(--green)}
+.badge-blue{background:rgba(59,91,219,.2);color:#8ab4f8}
+.badge-gray{background:rgba(74,82,120,.3);color:var(--soft)}
+
+/* TOPIC CARDS */
+.topic-card{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:18px;margin-bottom:12px}
+.topic-card.resolved{border-color:rgba(12,166,120,.3);background:rgba(12,166,120,.04)}
+.topic-header{display:flex;align-items:center;gap:8px;margin-bottom:8px}
+.topic-cat{font-size:10px;font-weight:700;color:var(--soft);letter-spacing:.5px}
+.status-badge{font-size:9px;font-weight:700;padding:2px 8px;border-radius:4px}
+.status-badge.resolved{background:rgba(12,166,120,.2);color:var(--green)}
+.status-badge.pending{background:rgba(245,159,0,.2);color:var(--gold)}
+.status-badge.sponsored{background:rgba(245,159,0,.15);color:var(--gold)}
+.topic-q{font-size:14px;font-weight:700;margin-bottom:8px;line-height:1.5}
+.topic-meta{display:flex;gap:14px;font-size:11px;color:var(--soft);margin-bottom:12px;flex-wrap:wrap}
+.vote-bars{display:flex;flex-direction:column;gap:5px;margin-bottom:12px}
+.vote-bar-row{display:flex;align-items:center;gap:8px}
+.vote-lbl{font-size:10px;font-weight:700;min-width:70px}
+.vote-lbl.yes{color:var(--green)}
+.vote-lbl.no{color:var(--red)}
+.vote-lbl.weighted{color:var(--blue)}
+.vote-bar-wrap{flex:1;height:7px;background:var(--border);border-radius:4px;overflow:hidden}
+.vote-bar-fill.yes{height:100%;background:var(--green);border-radius:4px;transition:width .6s}
+.vote-bar-fill.no{height:100%;background:var(--red);border-radius:4px;transition:width .6s}
+.vote-bar-fill.weighted{height:100%;background:var(--blue);border-radius:4px;transition:width .6s}
+.vote-pct{font-size:11px;font-weight:700;min-width:35px;text-align:right}
+.vote-pct.weighted{color:var(--blue)}
+.action-btns{display:flex;gap:8px;margin-top:12px}
+.btn-yes{padding:8px 20px;background:rgba(12,166,120,.15);color:var(--green);border:1px solid var(--green);border-radius:8px;font-size:12px;font-weight:700;cursor:pointer;transition:.2s}
+.btn-yes:hover{background:var(--green);color:#fff}
+.btn-no{padding:8px 20px;background:rgba(232,89,12,.15);color:var(--red);border:1px solid var(--red);border-radius:8px;font-size:12px;font-weight:700;cursor:pointer;transition:.2s}
+.btn-no:hover{background:var(--red);color:#fff}
+
+/* LOADING */
+#loading{position:fixed;inset:0;background:rgba(13,15,26,.9);display:flex;align-items:center;justify-content:center;z-index:999;flex-direction:column;gap:12px}
+.spinner{width:40px;height:40px;border:3px solid var(--border);border-top-color:var(--blue);border-radius:50%;animation:spin .8s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+#error-msg{background:rgba(232,89,12,.15);border:1px solid var(--red);color:var(--red);padding:12px 16px;border-radius:8px;margin:16px 24px;font-size:13px;display:none}
+.empty{color:var(--faint);font-size:13px;text-align:center;padding:24px}
+
+/* AUTH GATE */
+#auth-gate{display:flex;align-items:center;justify-content:center;min-height:100vh;flex-direction:column;gap:16px}
+#auth-gate p{color:var(--soft);font-size:14px}
+
+@media(max-width:768px){
+  .stats-grid{grid-template-columns:repeat(3,1fr)}
+  .grid-2{grid-template-columns:1fr}
+  .user-stats{gap:10px}
+}
+</style>
+</head>
+<body>
+
+<div id="loading"><div class="spinner"></div><p style="color:#8892b0;font-size:13px">データを読み込み中...</p></div>
+<div id="error-msg"></div>
+<div id="auth-gate"><p>管理者アカウントでログインしてください</p><p style="font-size:12px;color:#4a5278">MCforumアプリでログイン後、このページを開いてください</p></div>
+
+<div id="dashboard" style="display:none">
+
+<div class="header">
+  <div class="logo">
+    <svg viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+      <polyline points="4 18 4 8 8 13 12 6 16 13 20 8 20 18"/>
+    </svg>
+  </div>
+  <div class="header-title">MC forum <span style="color:#3b5bdb">Admin</span></div>
+  <div class="header-sub">集合知データ管理ダッシュボード</div>
+  <button class="refresh-btn" onclick="loadData()">🔄 更新</button>
+</div>
+
+<div class="tabs">
+  <button class="tab-btn active" data-tab="overview" onclick="switchTab('overview')">📊 概要</button>
+  <button class="tab-btn" data-tab="users" onclick="switchTab('users')">👥 予測者一覧</button>
+  <button class="tab-btn" data-tab="topics" onclick="switchTab('topics')">🎯 トピック管理</button>
+</div>
+
+<div class="wrap">
+
+  <!-- OVERVIEW TAB -->
+  <div id="tab-overview" class="tab-content active">
+    <div class="stats-grid">
+      <div class="stat-card"><div class="val" id="stat-users">-</div><div class="lbl">総ユーザー数</div></div>
+      <div class="stat-card"><div class="val" id="stat-predictions">-</div><div class="lbl">総予測数</div></div>
+      <div class="stat-card"><div class="val" id="stat-topics">-</div><div class="lbl">総トピック数</div></div>
+      <div class="stat-card"><div class="val" id="stat-resolved">-</div><div class="lbl">判定済み</div></div>
+      <div class="stat-card"><div class="val" id="stat-avg-influence">-</div><div class="lbl">平均影響力スコア</div></div>
+    </div>
+    <div class="grid-2">
+      <div class="panel">
+        <div class="panel-title">カテゴリ別予測分布</div>
+        <div id="cat-chart"></div>
+      </div>
+      <div class="panel">
+        <div class="panel-title">🏆 Top予測者</div>
+        <div id="top-users"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- USERS TAB -->
+  <div id="tab-users" class="tab-content">
+    <div id="users-list"></div>
+  </div>
+
+  <!-- TOPICS TAB -->
+  <div id="tab-topics" class="tab-content">
+    <div id="topics-list"></div>
+  </div>
+
+</div>
+</div>
+
+</body>
+</html>
