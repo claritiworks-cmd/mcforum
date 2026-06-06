@@ -28,13 +28,30 @@ const kPur     = Color(0xFF7048E8);
 const kBrs     = Color(0xFFEDF0FD);
 
 // 管理者UID（結果入力権限）
-const kAdminUid = 'OnAJ7rXVRbZ3k58VwfDabaFcY1k2';
+const kAdminUid = 'LNZHy6qDl9WyeKiF0MNo0rDkh0w1';
+
+
+// 称号システム
+Map<String, String> getTitleFromScore(double accuracy, int totalVotes) {
+  if (totalVotes < 5) return {'icon': '🔍', 'label': '見習い予測者', 'color': '9097A8'};
+  if (accuracy >= 0.90) return {'icon': '🔮', 'label': '神託者', 'color': '7048E8'};
+  if (accuracy >= 0.80) return {'icon': '🌟', 'label': '大予言者', 'color': 'F59F00'};
+  if (accuracy >= 0.70) return {'icon': '⭐', 'label': '予言者', 'color': '3B5BDB'};
+  if (accuracy >= 0.60) return {'icon': '📈', 'label': '分析家', 'color': '0CA678'};
+  return {'icon': '🔍', 'label': '見習い予測者', 'color': '9097A8'};
+}
+
+String getTitleFromUserData(Map<String, dynamic>? data) {
+  if (data == null) return '🔍 見習い予測者';
+  final totalVotes = data['totalVotes'] ?? 0;
+  final influenceScore = (data['influence_score'] ?? 0.0).toDouble();
+  final accuracy = totalVotes > 0 ? (influenceScore / (1 + totalVotes * 0.1) / 100) : 0.0;
+  final t = getTitleFromScore(accuracy, totalVotes);
+  return t['icon']! + ' ' + t['label']!;
+}
 
 const kExpertiseTags = [
-  'AI・機械学習', '暗号資産・Web3', 'テクノロジー',
-  '経済・金融', '政治・社会', 'スポーツ',
-  'エンタメ', 'ヘルスケア', '環境・エネルギー',
-  '未確認現象・予言',
+  '経済・金融', 'AI・テクノロジー', '政治・社会', '未確認現象・予言',
 ];
 
 class Topic {
@@ -44,6 +61,7 @@ class Topic {
   final bool resolved;
   final String? actualResult;
   final double authorInfluenceScore;
+  final String judgeCondition; // 判定基準
 
   Topic({
     required this.id, required this.question, required this.category,
@@ -52,6 +70,7 @@ class Topic {
     this.yesCount = 0, this.noCount = 0,
     this.resolved = false, this.actualResult,
     this.authorInfluenceScore = 0,
+    this.judgeCondition = '',
   });
 
   factory Topic.fromDoc(DocumentSnapshot doc) {
@@ -70,6 +89,7 @@ class Topic {
       resolved: d['resolved'] ?? false,
       actualResult: d['actualResult'],
       authorInfluenceScore: (d['authorInfluenceScore'] ?? 0).toDouble(),
+      judgeCondition: d['judgeCondition'] ?? '',
     );
   }
 }
@@ -105,7 +125,7 @@ class MainScreen extends StatefulWidget {
 
 class _MainScreenState extends State<MainScreen> {
   int _idx = 0;
-  final _pages = const [HomeScreen(), SearchScreen(), MessagesScreen(), ProfileScreen()];
+  final _pages = const [HomeScreen(), SearchScreen(), RankingScreen(), MessagesScreen(), ProfileScreen()];
 
   @override
   Widget build(BuildContext context) {
@@ -122,6 +142,7 @@ class _MainScreenState extends State<MainScreen> {
         items: const [
           BottomNavigationBarItem(icon: Icon(Icons.home_outlined), activeIcon: Icon(Icons.home), label: 'ホーム'),
           BottomNavigationBarItem(icon: Icon(Icons.search), label: '探す'),
+          BottomNavigationBarItem(icon: Icon(Icons.emoji_events_outlined), activeIcon: Icon(Icons.emoji_events), label: 'ランキング'),
           BottomNavigationBarItem(icon: Icon(Icons.chat_bubble_outline), activeIcon: Icon(Icons.chat_bubble), label: 'メッセージ'),
           BottomNavigationBarItem(icon: Icon(Icons.person_outline), activeIcon: Icon(Icons.person), label: 'マイページ'),
         ],
@@ -136,13 +157,40 @@ class _MainScreenState extends State<MainScreen> {
     );
   }
 
-  void _showPostSheet(BuildContext context) {
+  void _showPostSheet(BuildContext context) async {
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('投稿にはログインが必要です')));
       return;
     }
-    showModalBottomSheet(
+    final userDoc = await FirebaseFirestore.instance.doc('users/\${user.uid}').get();
+    final isPremium = userDoc.data()?['isPremium'] ?? false;
+    final isAdmin = user.uid == kAdminUid;
+    if (!isPremium && !isAdmin) {
+      if (context.mounted) showDialog(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('プレミアム会員限定', style: TextStyle(fontWeight: FontWeight.w800)),
+          content: const Column(mainAxisSize: MainAxisSize.min, children: [
+            Icon(Icons.star, color: kGold, size: 48),
+            SizedBox(height: 12),
+            Text('トピックの作成はプレミアム会員のみ利用できます。', textAlign: TextAlign.center),
+            SizedBox(height: 8),
+            Text('月額 ¥980 で無制限にトピックを作成できます。', style: TextStyle(fontSize: 12, color: kSoft), textAlign: TextAlign.center),
+          ]),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('閉じる')),
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(backgroundColor: kGold, foregroundColor: Colors.white),
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text('プレミアムに登録 ¥980/月'),
+            ),
+          ],
+        ),
+      );
+      return;
+    }
+    if (context.mounted) showModalBottomSheet(
       context: context,
       isScrollControlled: true,
       shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
@@ -164,10 +212,8 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
 
   final _catTabs = [
     ('all', 'すべて'), ('sponsor', 'スポンサー'),
-    ('経済・金融', '経済'), ('AI・機械学習', 'AI'),
-    ('暗号資産・Web3', '暗号資産'), ('政治・社会', '政治'),
-    ('スポーツ', 'スポーツ'), ('エンタメ', 'エンタメ'),
-    ('未確認現象・予言', '予言'),
+    ('経済・金融', '経済'), ('AI・テクノロジー', 'AI'),
+    ('政治・社会', '政治'), ('未確認現象・予言', '予言'),
   ];
 
   @override
@@ -588,11 +634,29 @@ class _TopicCardState extends State<TopicCard> {
         child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
           if (t.sponsored) _sponsorBar(t),
           if (t.resolved) _resolvedBanner(t),
+          _juryBanner(t, context),
           _authorRow(context, t),
           const SizedBox(height: 8),
           Text(t.question,
             style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w700,
                 height: 1.55, color: Color(0xFF1A1D29))),
+          if (t.judgeCondition.isNotEmpty) ...[
+            const SizedBox(height: 6),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+              decoration: BoxDecoration(
+                color: kBg,
+                borderRadius: BorderRadius.circular(6),
+                border: Border.all(color: kBorder),
+              ),
+              child: Row(children: [
+                const Icon(Icons.gavel, size: 11, color: kFaint),
+                const SizedBox(width: 5),
+                Expanded(child: Text('判定基準：${t.judgeCondition}',
+                    style: const TextStyle(fontSize: 10, color: kSoft))),
+              ]),
+            ),
+          ],
           const SizedBox(height: 12),
           if (_myVote == null && !_showConfidenceSlider && !t.resolved) _voteButtons(),
           if (_myVote == null && _showConfidenceSlider && !t.resolved) _confidenceVotePanel(),
@@ -603,6 +667,68 @@ class _TopicCardState extends State<TopicCard> {
           _actionBar(t),
         ]),
       ),
+    );
+  }
+
+  Widget _juryBanner(Topic t, BuildContext context) {
+    if (t.category != '未確認現象・予言') return const SizedBox.shrink();
+    if (t.resolved) return const SizedBox.shrink();
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 10),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      decoration: BoxDecoration(
+        gradient: const LinearGradient(
+          colors: [Color(0xFF1a0533), Color(0xFF2d1465)],
+        ),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: const Color(0xFF7048E8).withOpacity(.5)),
+      ),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        const Row(children: [
+          Text('🔮 ', style: TextStyle(fontSize: 16)),
+          Text('オカルト大陪審', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w800, color: Color(0xFFB197FC))),
+          Spacer(),
+          Text('証拠を提出して判定に参加', style: TextStyle(fontSize: 9, color: Color(0xFF9775FA))),
+        ]),
+        const SizedBox(height: 8),
+        StreamBuilder<QuerySnapshot>(
+          stream: FirebaseFirestore.instance
+              .collection('topics').doc(t.id)
+              .collection('evidence').snapshots(),
+          builder: (ctx, snap) {
+            final count = snap.data?.docs.length ?? 0;
+            return Row(children: [
+              Text('証拠 $count件提出済み',
+                  style: const TextStyle(fontSize: 10, color: Color(0xFFCCC2FF))),
+              const Spacer(),
+              GestureDetector(
+                onTap: () => _showEvidenceSheet(context, t),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF7048E8),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: const Text('証拠を提出 / 見る',
+                      style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700, color: Colors.white)),
+                ),
+              ),
+            ]);
+          },
+        ),
+      ]),
+    );
+  }
+
+  void _showEvidenceSheet(BuildContext context, Topic t) {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: const Color(0xFF0d0f1a),
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      builder: (_) => EvidenceSheet(topic: t),
     );
   }
 
@@ -766,15 +892,17 @@ class _TopicCardState extends State<TopicCard> {
 
   Widget _weightedScoreBar(Topic t) {
     return FutureBuilder<Map<String, double>>(
-      future: _calcWeightedScore(t.id),
+      future: _calcAllScores(t.id, t.yesCount, t.noCount),
       builder: (ctx, snap) {
         if (!snap.hasData) return const SizedBox.shrink();
-        final weightedYesPct = snap.data!['yes'] ?? 50;
+        final weightedYesPct = snap.data!['weighted'] ?? 50;
+        final debateYesPct = snap.data!['debate'] ?? 50;
         final simplePct = (t.yesCount + t.noCount) > 0
             ? t.yesCount / (t.yesCount + t.noCount) * 100
             : 50;
-        final diff = (weightedYesPct - simplePct).toStringAsFixed(1);
-        final diffColor = weightedYesPct > simplePct ? kYes : kNo;
+        final wDiff = (weightedYesPct - simplePct).toStringAsFixed(1);
+        final dDiff = (debateYesPct - simplePct).toStringAsFixed(1);
+
         return Container(
           margin: const EdgeInsets.only(bottom: 8),
           padding: const EdgeInsets.all(10),
@@ -784,37 +912,39 @@ class _TopicCardState extends State<TopicCard> {
             border: Border.all(color: kBorder),
           ),
           child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            // 重み付き集合知
             Row(children: [
               const Text('🧠 重み付き集合知',
                   style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700, color: kPrimary)),
               const Spacer(),
               Text('YES ${weightedYesPct.toStringAsFixed(0)}%',
                   style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w800, color: kPrimary)),
-              const SizedBox(width: 6),
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
-                decoration: BoxDecoration(
-                  color: diffColor.withOpacity(.1),
-                  borderRadius: BorderRadius.circular(4),
-                ),
-                child: Text(
-                  '${weightedYesPct > simplePct ? '+' : ''}$diff%',
-                  style: TextStyle(fontSize: 9, fontWeight: FontWeight.w700, color: diffColor),
-                ),
-              ),
+              const SizedBox(width: 4),
+              _diffBadge(double.parse(wDiff)),
             ]),
-            const SizedBox(height: 6),
-            ClipRRect(
-              borderRadius: BorderRadius.circular(4),
-              child: LinearProgressIndicator(
-                value: weightedYesPct / 100,
-                minHeight: 5,
-                backgroundColor: kBorder,
-                valueColor: const AlwaysStoppedAnimation(kPrimary),
-              ),
-            ),
             const SizedBox(height: 4),
-            const Text('的中率の高い予測者の意見を重視した確率',
+            ClipRRect(borderRadius: BorderRadius.circular(3),
+              child: LinearProgressIndicator(value: weightedYesPct / 100, minHeight: 4,
+                  backgroundColor: kBorder,
+                  valueColor: const AlwaysStoppedAnimation(kPrimary))),
+            const SizedBox(height: 8),
+            // 議論オッズ
+            Row(children: [
+              const Text('⚔️ 議論オッズ',
+                  style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700, color: kPur)),
+              const Spacer(),
+              Text('YES ${debateYesPct.toStringAsFixed(0)}%',
+                  style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w800, color: kPur)),
+              const SizedBox(width: 4),
+              _diffBadge(double.parse(dDiff), color: kPur),
+            ]),
+            const SizedBox(height: 4),
+            ClipRRect(borderRadius: BorderRadius.circular(3),
+              child: LinearProgressIndicator(value: debateYesPct / 100, minHeight: 4,
+                  backgroundColor: kBorder,
+                  valueColor: const AlwaysStoppedAnimation(kPur))),
+            const SizedBox(height: 4),
+            const Text('議論の「納得」数で補正した確率',
                 style: TextStyle(fontSize: 9, color: kFaint)),
           ]),
         );
@@ -822,14 +952,24 @@ class _TopicCardState extends State<TopicCard> {
     );
   }
 
-  Future<Map<String, double>> _calcWeightedScore(String topicId) async {
-    final preds = await FirebaseFirestore.instance
-        .collection('predictions')
-        .get();
-    final topicPreds = preds.docs
-        .where((d) => (d.data())['topicId'] == topicId)
-        .toList();
-    if (topicPreds.isEmpty) return {'yes': 50, 'no': 50};
+  Widget _diffBadge(double diff, {Color color = kPrimary}) {
+    if (diff.abs() < 0.5) return const SizedBox.shrink();
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+      decoration: BoxDecoration(
+        color: color.withOpacity(.1), borderRadius: BorderRadius.circular(4)),
+      child: Text('${diff > 0 ? '+' : ''}${diff.toStringAsFixed(1)}%',
+          style: TextStyle(fontSize: 9, fontWeight: FontWeight.w700, color: color)),
+    );
+  }
+
+  Future<Map<String, double>> _calcAllScores(String topicId, int yesCount, int noCount) async {
+    final total = yesCount + noCount;
+    final simplePct = total > 0 ? yesCount / total * 100 : 50.0;
+
+    // 重み付きスコア計算
+    final preds = await FirebaseFirestore.instance.collection('predictions').get();
+    final topicPreds = preds.docs.where((d) => (d.data())['topicId'] == topicId).toList();
 
     double weightedYes = 0, weightedTotal = 0;
     for (final pred in topicPreds) {
@@ -843,9 +983,25 @@ class _TopicCardState extends State<TopicCard> {
       weightedTotal += weight;
       if (vote == 'yes') weightedYes += weight;
     }
-    if (weightedTotal == 0) return {'yes': 50, 'no': 50};
-    final yesPct = (weightedYes / weightedTotal) * 100;
-    return {'yes': yesPct, 'no': 100 - yesPct};
+    final weightedPct = weightedTotal > 0 ? (weightedYes / weightedTotal) * 100 : simplePct;
+
+    // 議論オッズ計算
+    final comments = await FirebaseFirestore.instance
+        .collection('topics').doc(topicId).collection('comments').get();
+    int yesLikes = 0, noLikes = 0;
+    for (final c in comments.docs) {
+      final d = c.data();
+      final likes = (d['likes'] ?? 0) as int;
+      if (d['stance'] == 'yes') yesLikes += likes;
+      else noLikes += likes;
+    }
+    final likeDiff = (yesLikes - noLikes) * 0.5;
+    final debatePct = (simplePct + likeDiff).clamp(5.0, 95.0);
+
+    return {
+      'weighted': weightedPct,
+      'debate': debatePct,
+    };
   }
 
   Widget _resultBar(double yp, int tot) => Column(children: [
@@ -938,7 +1094,7 @@ class _TopicCardState extends State<TopicCard> {
       isScrollControlled: true,
       shape: const RoundedRectangleBorder(
           borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
-      builder: (_) => CommentsSheet(topicId: widget.topic.id),
+      builder: (_) => CommentsSheet(topicId: widget.topic.id, myVote: _myVote),
     );
   }
 
@@ -1043,6 +1199,19 @@ class _TopicCardState extends State<TopicCard> {
         final isCorrect = vote == result;
         await pred.reference.update({'resolved': true});
 
+        // 確信度連動ボーナスポイント
+        if (isCorrect) {
+          final confidence = (data['confidence'] ?? 50) as int;
+          int bonusPt = 10; // 基本
+          if (confidence >= 90) bonusPt = 50;
+          else if (confidence >= 80) bonusPt = 40;
+          else if (confidence >= 70) bonusPt = 30;
+          else if (confidence >= 60) bonusPt = 20;
+          await FirebaseFirestore.instance.doc('users/$uid').update({
+            'points': FieldValue.increment(bonusPt),
+          });
+        }
+
         final userRef = FirebaseFirestore.instance.doc('users/$uid');
         final userDoc = await userRef.get();
         final userData = userDoc.data() as Map<String, dynamic>?;
@@ -1140,6 +1309,7 @@ class PostTopicSheet extends StatefulWidget {
 
 class _PostTopicSheetState extends State<PostTopicSheet> {
   final _q = TextEditingController();
+  final _judge = TextEditingController();
   String _cat = '経済・金融';
   String _deadline = '2026年12月末';
   bool _loading = false;
@@ -1153,6 +1323,7 @@ class _PostTopicSheetState extends State<PostTopicSheet> {
     final influenceScore = (userDoc.data()?['influence_score'] ?? 0).toDouble();
     await FirebaseFirestore.instance.collection('topics').add({
       'question': _q.text.trim(), 'category': _cat, 'deadline': _deadline,
+      'judgeCondition': _judge.text.trim(),
       'authorUid': uid, 'authorName': userDoc.data()?['name'] ?? '',
       'authorInfluenceScore': influenceScore,
       'sponsored': false, 'prize': 0, 'yesCount': 0, 'noCount': 0,
@@ -1195,6 +1366,17 @@ class _PostTopicSheetState extends State<PostTopicSheet> {
             items: ['2026年9月末', '2026年12月末', '2027年3月末']
                 .map((d) => DropdownMenuItem(value: d, child: Text(d))).toList(),
             onChanged: (v) => setState(() => _deadline = v!),
+          ),
+          const SizedBox(height: 12),
+          TextField(
+            controller: _judge,
+            maxLength: 100,
+            decoration: const InputDecoration(
+              labelText: '判定基準（任意）',
+              border: OutlineInputBorder(),
+              hintText: '例：防衛省が公式発表した場合YES',
+              helperText: '何が起きたらYES/NOと判定するかを明確に',
+            ),
           ),
           const SizedBox(height: 16),
           SizedBox(
@@ -1246,13 +1428,10 @@ class SearchScreen extends StatelessWidget {
           child: GridView.count(shrinkWrap: true, physics: const NeverScrollableScrollPhysics(),
             crossAxisCount: 2, mainAxisSpacing: 8, crossAxisSpacing: 8, childAspectRatio: 2.5,
             children: [
-              _catCard('🤖 AI・機械学習', const Color(0xFFEDF0FD), kPrimary),
-              _catCard('🪙 暗号資産・Web3', kGoldBg, kGold),
-              _catCard('💹 経済・金融', kYesBg, kYes),
-              _catCard('⚽ スポーツ', kNoBg, kNo),
-              _catCard('🏛 政治・社会', const Color(0xFFF3EFFE), kPur),
-              _catCard('💻 テクノロジー', const Color(0xFFFDEEF4), const Color(0xFFE64980)),
-              _catCard('🔮 未確認現象・予言', const Color(0xFFE0F7FA), const Color(0xFF006064)),
+              _catCard(context, '💹 経済・金融', '経済・金融', kYesBg, kYes),
+              _catCard(context, '🤖 AI・テクノロジー', 'AI・テクノロジー', const Color(0xFFEDF0FD), kPrimary),
+              _catCard(context, '🏛 政治・社会', '政治・社会', const Color(0xFFF3EFFE), kPur),
+              _catCard(context, '🔮 未確認現象・予言', '未確認現象・予言', const Color(0xFFE0F7FA), const Color(0xFF006064)),
             ],
           )),
         const SizedBox(height: 80),
@@ -1260,9 +1439,15 @@ class SearchScreen extends StatelessWidget {
     );
   }
 
-  Widget _catCard(String label, Color bg, Color fg) => Container(
-    decoration: BoxDecoration(color: bg, borderRadius: BorderRadius.circular(11)),
-    child: Center(child: Text(label, style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: fg))));
+  Widget _catCard(BuildContext context, String label, String category, Color bg, Color fg) =>
+    GestureDetector(
+      onTap: () => Navigator.push(context, MaterialPageRoute(
+        builder: (_) => CategoryTopicsScreen(category: category, label: label),
+      )),
+      child: Container(
+        decoration: BoxDecoration(color: bg, borderRadius: BorderRadius.circular(11)),
+        child: Center(child: Text(label,
+            style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: fg)))));
 }
 
 // ── メッセージ画面（Firestore連動） ───────────────────────
@@ -1584,92 +1769,190 @@ class _ProfileScreenState extends State<ProfileScreen> {
               style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w800, color: kGold)),
         ]),
       ),
+      const SizedBox(height: 20),
+      // プレミアム会員登録
+      _premiumSection(ctx, user, data),
       const SizedBox(height: 80),
     ]);
   }
 
-  Widget _profileHeader(BuildContext ctx, User user, Map<String, dynamic>? data) => Container(
-    padding: const EdgeInsets.fromLTRB(16, 16, 16, 12),
-    child: Column(children: [
-      // 上部：編集・ログアウトボタン
-      Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+  Widget _premiumSection(BuildContext ctx, User user, Map<String, dynamic>? data) {
+    final isPremium = data?['isPremium'] ?? false;
+    if (isPremium) {
+      return Container(
+        margin: const EdgeInsets.symmetric(horizontal: 16),
+        padding: const EdgeInsets.all(16),
+        decoration: BoxDecoration(
+          gradient: const LinearGradient(colors: [Color(0xFF664d00), Color(0xFF3d2e00)]),
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(color: kGold.withOpacity(.5)),
+        ),
+        child: const Row(children: [
+          Text('⭐', style: TextStyle(fontSize: 24)),
+          SizedBox(width: 12),
+          Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Text('プレミアム会員', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w800, color: kGold)),
+            Text('トピック作成・全機能が利用可能です', style: TextStyle(fontSize: 11, color: Color(0xFFFFD470))),
+          ])),
+        ]),
+      );
+    }
+    return Container(
+      margin: const EdgeInsets.symmetric(horizontal: 16),
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: kGoldBg,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: kGold.withOpacity(.3)),
+      ),
+      child: Column(children: [
+        const Row(children: [
+          Text('⭐', style: TextStyle(fontSize: 24)),
+          SizedBox(width: 12),
+          Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Text('プレミアム会員', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w800, color: Color(0xFFB8860B))),
+            Text('月額 ¥980 でトピック作成が可能になります', style: TextStyle(fontSize: 11, color: kSoft)),
+          ])),
+        ]),
+        const SizedBox(height: 12),
+        const Padding(padding: EdgeInsets.symmetric(horizontal: 4), child: Column(children: [
+          _PremiumFeatureRow(icon: '🎯', text: 'トピック作成（無制限）'),
+          _PremiumFeatureRow(icon: '📊', text: '集合知データへの優先アクセス'),
+          _PremiumFeatureRow(icon: '🔔', text: '結果確定の即時通知'),
+        ])),
+        const SizedBox(height: 14),
+        SizedBox(width: double.infinity, child: ElevatedButton(
+          style: ElevatedButton.styleFrom(
+            backgroundColor: kGold, foregroundColor: Colors.white,
+            padding: const EdgeInsets.symmetric(vertical: 13),
+          ),
+          onPressed: () {
+            ScaffoldMessenger.of(ctx).showSnackBar(
+                const SnackBar(content: Text('準備中です。近日公開予定！')));
+          },
+          child: const Text('プレミアムに登録する ¥980/月',
+              style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700)),
+        )),
+      ]),
+    );
+  }
+
+  Widget _profileHeader(BuildContext ctx, User user, Map<String, dynamic>? data) {
+    final isPremium = data?['isPremium'] ?? false;
+    return Container(
+      padding: const EdgeInsets.fromLTRB(14, 12, 14, 8),
+      child: Column(children: [
+        // ボタン行（上部）
+        Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+          GestureDetector(
+            onTap: () => _shareProphetCard(ctx, user, data),
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+              decoration: BoxDecoration(
+                color: const Color(0xFF1a0533),
+                border: Border.all(color: kPur.withOpacity(.4)),
+                borderRadius: BorderRadius.circular(7),
+              ),
+              child: const Text('🔮 シェア',
+                  style: TextStyle(fontSize: 10, color: Color(0xFFB197FC), fontWeight: FontWeight.w700)),
+            ),
+          ),
+          GestureDetector(
+            onTap: () async {
+              await FirebaseAuth.instance.signOut();
+              if (ctx.mounted) ScaffoldMessenger.of(ctx).showSnackBar(
+                  const SnackBar(content: Text('ログアウトしました')));
+            },
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+              decoration: BoxDecoration(
+                border: Border.all(color: kNo.withOpacity(.3)),
+                borderRadius: BorderRadius.circular(7),
+              ),
+              child: const Row(mainAxisSize: MainAxisSize.min, children: [
+                Icon(Icons.logout, size: 11, color: kNo),
+                SizedBox(width: 3),
+                Text('ログアウト', style: TextStyle(fontSize: 10, color: kNo, fontWeight: FontWeight.w600)),
+              ]),
+            ),
+          ),
+        ]),
+        const SizedBox(height: 12),
+        // 中央：アイコン・名前・称号
         GestureDetector(
           onTap: () => Navigator.push(ctx, MaterialPageRoute(
             builder: (_) => ProfileEditScreen(user: user, data: data),
           )),
-          child: Container(
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
-            decoration: BoxDecoration(
-              border: Border.all(color: kBorder),
-              borderRadius: BorderRadius.circular(8),
+          child: Stack(alignment: Alignment.bottomRight, children: [
+            CircleAvatar(
+              radius: 28,
+              backgroundColor: _parseColor(data?['color'] ?? '#3b5bdb'),
+              child: Text(
+                (data?['name'] ?? user.displayName ?? '?').isNotEmpty
+                    ? (data?['name'] ?? user.displayName ?? '?')[0].toUpperCase() : '?',
+                style: const TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.w700),
+              ),
             ),
-            child: const Text('編集', style: TextStyle(fontSize: 11, color: kSoft, fontWeight: FontWeight.w600)),
-          ),
+            Container(width: 16, height: 16,
+              decoration: const BoxDecoration(color: kPrimary, shape: BoxShape.circle),
+              child: const Icon(Icons.edit, color: Colors.white, size: 9)),
+          ]),
         ),
-        GestureDetector(
-          onTap: () async {
-            await FirebaseAuth.instance.signOut();
-            if (ctx.mounted) ScaffoldMessenger.of(ctx).showSnackBar(
-                const SnackBar(content: Text('ログアウトしました')));
-          },
-          child: Container(
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
-            decoration: BoxDecoration(
-              border: Border.all(color: kNo.withOpacity(.4)),
-              borderRadius: BorderRadius.circular(8),
+        const SizedBox(height: 8),
+        Row(mainAxisAlignment: MainAxisAlignment.center, children: [
+          Text(data?['name'] ?? user.displayName ?? 'ユーザー',
+              style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w800)),
+          if (isPremium) ...[
+            const SizedBox(width: 6),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+              decoration: BoxDecoration(
+                gradient: const LinearGradient(colors: [Color(0xFFf59f00), Color(0xFFe67700)]),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: const Text('⭐ Premium',
+                  style: TextStyle(fontSize: 9, fontWeight: FontWeight.w800, color: Colors.white)),
             ),
-            child: const Row(mainAxisSize: MainAxisSize.min, children: [
-              Icon(Icons.logout, size: 12, color: kNo),
-              SizedBox(width: 4),
-              Text('ログアウト', style: TextStyle(fontSize: 11, color: kNo, fontWeight: FontWeight.w600)),
-            ]),
-          ),
-        ),
-      ]),
-      const SizedBox(height: 16),
-      // 中央：アイコン・名前・ランク
-      GestureDetector(
-        onTap: () => Navigator.push(ctx, MaterialPageRoute(
-          builder: (_) => ProfileEditScreen(user: user, data: data),
-        )),
-        child: Stack(alignment: Alignment.bottomRight, children: [
-          CircleAvatar(
-            radius: 40,
-            backgroundColor: _parseColor(data?['color'] ?? '#3b5bdb'),
-            child: Text(
-              (data?['name'] ?? user.displayName ?? '?').isNotEmpty
-                  ? (data?['name'] ?? user.displayName ?? '?')[0].toUpperCase() : '?',
-              style: const TextStyle(color: Colors.white, fontSize: 28, fontWeight: FontWeight.w700),
-            ),
-          ),
-          Container(
-            width: 22, height: 22,
-            decoration: const BoxDecoration(color: kPrimary, shape: BoxShape.circle),
-            child: const Icon(Icons.edit, color: Colors.white, size: 12),
-          ),
+          ],
         ]),
-      ),
-      const SizedBox(height: 10),
-      Text(data?['name'] ?? user.displayName ?? 'ユーザー',
-          style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w800)),
-      const SizedBox(height: 4),
-      if (data?['bio'] != null && (data!['bio'] as String).isNotEmpty)
-        Padding(
-          padding: const EdgeInsets.only(bottom: 4),
-          child: Text(data['bio'],
-              style: const TextStyle(fontSize: 11, color: kSoft),
-              maxLines: 2, overflow: TextOverflow.ellipsis, textAlign: TextAlign.center),
-        ),
-      const Text('🥈 分析家ランク', style: TextStyle(fontSize: 12, color: kFaint)),
-    ]),
-  );
-
+        const SizedBox(height: 2),
+        Text(getTitleFromUserData(data), style: const TextStyle(fontSize: 10, color: kFaint)),
+        if (data?['bio'] != null && (data!['bio'] as String).isNotEmpty)
+          Text(data['bio'], style: const TextStyle(fontSize: 11, color: kSoft),
+              maxLines: 1, overflow: TextOverflow.ellipsis, textAlign: TextAlign.center),
+      ]),
+    );
+  }
   Color _parseColor(String hex) {
     try {
       return Color(int.parse(hex.replaceFirst('#', '0xFF')));
     } catch (_) {
       return kPrimary;
     }
+  }
+
+  void _shareProphetCard(BuildContext ctx, User user, Map<String, dynamic>? data) {
+    if (data == null) return;
+    final name = data['name'] ?? user.displayName ?? 'ユーザー';
+    final totalVotes = data['totalVotes'] ?? 0;
+    final influenceScore = (data['influence_score'] ?? 0.0).toDouble();
+    final accuracy = totalVotes > 0
+        ? (influenceScore / (1 + totalVotes * 0.1) / 100 * 100).toStringAsFixed(0)
+        : '0';
+    final title = getTitleFromUserData(data);
+    final expertise = List<String>.from(data['expertise'] ?? []);
+    final topExpertise = expertise.isNotEmpty ? expertise.first : '';
+    final expertiseLine = topExpertise.isNotEmpty ? '\n専門：$topExpertise' : '';
+    final shareText = '🔮 MC forum 予言者カード\n\n'
+        '$title\n\n'
+        '$name\n'
+        '的中率 ${accuracy}%$expertiseLine\n'
+        '予測数 ${totalVotes}件\n\n'
+        'Twitterは予測を流す場所。\n'
+        'ここは予測を証明する場所。\n\n'
+        '▶ https://mcforum.vercel.app\n'
+        '#MC_forum #予測SNS #集合知';
+    Share.share(shareText);
   }
 
   Widget _statRow(Map<String, dynamic>? data) => Padding(
@@ -1737,7 +2020,7 @@ class UserProfileScreen extends StatelessWidget {
                 const SizedBox(height: 12),
                 Text(name, style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w800)),
                 const SizedBox(height: 4),
-                const Text('🥈 分析家ランク', style: TextStyle(fontSize: 12, color: kFaint)),
+                Text(getTitleFromUserData(data), style: const TextStyle(fontSize: 12, color: kFaint)),
                 const SizedBox(height: 16),
                 Row(mainAxisAlignment: MainAxisAlignment.center, children: [
                   FollowButton(targetUid: uid, targetName: name),
@@ -2019,6 +2302,10 @@ class _ProfileEditScreenState extends State<ProfileEditScreen> {
   late TextEditingController _nameCtrl;
   late TextEditingController _bioCtrl;
   String _selectedColor = '#3b5bdb';
+  String? _selectedAge;
+  String? _selectedGender;
+  String? _selectedPref;
+  String? _selectedJob;
   bool _loading = false;
 
   final _colors = [
@@ -2027,6 +2314,17 @@ class _ProfileEditScreenState extends State<ProfileEditScreen> {
     '#1a1d29', '#495057',
   ];
 
+  final _ageOptions = ['10代', '20代', '30代', '40代', '50代', '60代以上'];
+  final _genderOptions = ['男性', '女性', 'その他', '回答しない'];
+  final _jobOptions = ['会社員', '経営者・役員', '公務員', '自営業・フリーランス',
+      '学生', '研究者・教員', '医療・福祉', '金融・保険', 'IT・エンジニア', 'その他'];
+  final _prefOptions = ['北海道', '青森', '岩手', '宮城', '秋田', '山形', '福島',
+      '茨城', '栃木', '群馬', '埼玉', '千葉', '東京', '神奈川', '新潟', '富山',
+      '石川', '福井', '山梨', '長野', '岐阜', '静岡', '愛知', '三重', '滋賀',
+      '京都', '大阪', '兵庫', '奈良', '和歌山', '鳥取', '島根', '岡山', '広島',
+      '山口', '徳島', '香川', '愛媛', '高知', '福岡', '佐賀', '長崎', '熊本',
+      '大分', '宮崎', '鹿児島', '沖縄', '海外在住'];
+
   @override
   void initState() {
     super.initState();
@@ -2034,6 +2332,10 @@ class _ProfileEditScreenState extends State<ProfileEditScreen> {
         text: widget.data?['name'] ?? widget.user.displayName ?? '');
     _bioCtrl = TextEditingController(text: widget.data?['bio'] ?? '');
     _selectedColor = widget.data?['color'] ?? '#3b5bdb';
+    _selectedAge = widget.data?['age'];
+    _selectedGender = widget.data?['gender'];
+    _selectedPref = widget.data?['prefecture'];
+    _selectedJob = widget.data?['job'];
   }
 
   @override
@@ -2051,19 +2353,88 @@ class _ProfileEditScreenState extends State<ProfileEditScreen> {
     }
   }
 
+  void _shareProphetCard(BuildContext ctx, User user, Map<String, dynamic>? data) {
+    if (data == null) return;
+    final name = data['name'] ?? user.displayName ?? 'ユーザー';
+    final totalVotes = data['totalVotes'] ?? 0;
+    final influenceScore = (data['influence_score'] ?? 0.0).toDouble();
+    final accuracy = totalVotes > 0
+        ? (influenceScore / (1 + totalVotes * 0.1) / 100 * 100).toStringAsFixed(0)
+        : '0';
+    final title = getTitleFromUserData(data);
+    final expertise = List<String>.from(data['expertise'] ?? []);
+    final topExpertise = expertise.isNotEmpty ? expertise.first : '';
+
+    final expertiseLine = topExpertise.isNotEmpty ? '\n専門：$topExpertise' : '';
+    final shareText = '🔮 MC forum 予言者カード\n\n'
+        '$title\n\n'
+        '$name\n'
+        '的中率 \${accuracy}%\$expertiseLine\n'
+        '予測数 \${totalVotes}件\n\n'
+        'Twitterは予測を流す場所。\n'
+        'ここは予測を証明する場所。\n\n'
+        '▶ https://mcforum.vercel.app\n'
+        '#MC_forum #予測SNS #集合知';
+
+    Share.share(shareText);
+  }
+
+  bool get _isAttributeComplete =>
+      _selectedAge != null && _selectedGender != null &&
+      _selectedPref != null && _selectedJob != null;
+
+  bool get _wasAttributeComplete =>
+      widget.data?['age'] != null && widget.data?['gender'] != null &&
+      widget.data?['prefecture'] != null && widget.data?['job'] != null;
+
   Future<void> _save() async {
     if (_nameCtrl.text.trim().isEmpty) return;
     setState(() => _loading = true);
-    await FirebaseFirestore.instance.doc('users/${widget.user.uid}').update({
+
+    final updates = <String, dynamic>{
       'name': _nameCtrl.text.trim(),
       'bio': _bioCtrl.text.trim(),
       'color': _selectedColor,
-    });
+      if (_selectedAge != null) 'age': _selectedAge,
+      if (_selectedGender != null) 'gender': _selectedGender,
+      if (_selectedPref != null) 'prefecture': _selectedPref,
+      if (_selectedJob != null) 'job': _selectedJob,
+    };
+
+    // 段階的ボーナス計算
+    int bonusPoints = 0;
+    final prevData = widget.data ?? {};
+
+    // ステップ1：年齢＋性別（初回）
+    if (_selectedAge != null && _selectedGender != null &&
+        prevData['age'] == null && prevData['gender'] == null) {
+      bonusPoints += 100;
+      updates['step1Completed'] = true;
+    }
+    // ステップ2：都道府県（初回）
+    if (_selectedPref != null && prevData['prefecture'] == null) {
+      bonusPoints += 100;
+      updates['step2Completed'] = true;
+    }
+    // ステップ3：職業（初回）
+    if (_selectedJob != null && prevData['job'] == null) {
+      bonusPoints += 100;
+      updates['step3Completed'] = true;
+    }
+
+    if (bonusPoints > 0) {
+      updates['points'] = FieldValue.increment(bonusPoints) as Object;
+    }
+
+    await FirebaseFirestore.instance.doc('users/${widget.user.uid}').update(updates);
+
     if (mounted) {
       setState(() => _loading = false);
       Navigator.pop(context);
-      ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('✅ プロフィールを更新しました')));
+      final msg = bonusPoints > 0
+          ? '✅ プロフィールを更新しました！ +${bonusPoints}pt 🎉'
+          : '✅ プロフィールを更新しました';
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
     }
   }
 
@@ -2152,6 +2523,71 @@ class _ProfileEditScreenState extends State<ProfileEditScreen> {
             hintText: '専門分野や予測スタイルを教えてください',
           ),
         ),
+        const SizedBox(height: 24),
+
+        // 属性情報ボーナスバナー
+        if (!_wasAttributeComplete) Container(
+          padding: const EdgeInsets.all(14),
+          decoration: BoxDecoration(
+            color: kGoldBg,
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: kGold.withOpacity(.4)),
+          ),
+          child: Row(children: [
+            const Text('🎁', style: TextStyle(fontSize: 24)),
+            const SizedBox(width: 12),
+            const Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Text('属性情報を入力して 最大+300pt',
+                  style: TextStyle(fontSize: 13, fontWeight: FontWeight.w800, color: Color(0xFFB8860B))),
+              Text('年齢・性別で+100pt、都道府県で+100pt、職業で+100pt（各初回のみ）',
+                  style: TextStyle(fontSize: 10, color: kSoft)),
+            ])),
+          ]),
+        ),
+        if (!_wasAttributeComplete) const SizedBox(height: 20),
+
+        // 属性情報
+        const Text('属性情報（任意・最大+300pt）',
+            style: TextStyle(fontSize: 13, fontWeight: FontWeight.w800)),
+        const SizedBox(height: 4),
+        const Text('予測精度の重み付けに使用されます。企業向けデータとして活用されます。',
+            style: TextStyle(fontSize: 10, color: kFaint)),
+        const SizedBox(height: 12),
+
+        // 年齢
+        DropdownButtonFormField<String>(
+          value: _selectedAge,
+          decoration: const InputDecoration(labelText: '年齢', border: OutlineInputBorder()),
+          items: _ageOptions.map((a) => DropdownMenuItem(value: a, child: Text(a))).toList(),
+          onChanged: (v) => setState(() => _selectedAge = v),
+        ),
+        const SizedBox(height: 12),
+
+        // 性別
+        DropdownButtonFormField<String>(
+          value: _selectedGender,
+          decoration: const InputDecoration(labelText: '性別', border: OutlineInputBorder()),
+          items: _genderOptions.map((g) => DropdownMenuItem(value: g, child: Text(g))).toList(),
+          onChanged: (v) => setState(() => _selectedGender = v),
+        ),
+        const SizedBox(height: 12),
+
+        // 都道府県
+        DropdownButtonFormField<String>(
+          value: _selectedPref,
+          decoration: const InputDecoration(labelText: '都道府県', border: OutlineInputBorder()),
+          items: _prefOptions.map((p) => DropdownMenuItem(value: p, child: Text(p))).toList(),
+          onChanged: (v) => setState(() => _selectedPref = v),
+        ),
+        const SizedBox(height: 12),
+
+        // 職業
+        DropdownButtonFormField<String>(
+          value: _selectedJob,
+          decoration: const InputDecoration(labelText: '職業', border: OutlineInputBorder()),
+          items: _jobOptions.map((j) => DropdownMenuItem(value: j, child: Text(j))).toList(),
+          onChanged: (v) => setState(() => _selectedJob = v),
+        ),
         const SizedBox(height: 32),
 
         SizedBox(
@@ -2173,10 +2609,11 @@ class _ProfileEditScreenState extends State<ProfileEditScreen> {
   }
 }
 
-// ── コメントシート ─────────────────────────────────────
+// ── コメントシート（議論バトル版） ───────────────────────
 class CommentsSheet extends StatefulWidget {
   final String topicId;
-  const CommentsSheet({super.key, required this.topicId});
+  final String? myVote;
+  const CommentsSheet({super.key, required this.topicId, this.myVote});
   @override
   State<CommentsSheet> createState() => _CommentsSheetState();
 }
@@ -2184,6 +2621,13 @@ class CommentsSheet extends StatefulWidget {
 class _CommentsSheetState extends State<CommentsSheet> {
   final _ctrl = TextEditingController();
   bool _loading = false;
+  String _stance = 'yes'; // yes or no
+
+  @override
+  void initState() {
+    super.initState();
+    _stance = widget.myVote ?? 'yes';
+  }
 
   Future<void> _post() async {
     final uid = FirebaseAuth.instance.currentUser?.uid;
@@ -2201,6 +2645,9 @@ class _CommentsSheetState extends State<CommentsSheet> {
       'uid': uid,
       'authorName': userDoc.data()?['name'] ?? '',
       'text': _ctrl.text.trim(),
+      'stance': _stance,
+      'likes': 0,
+      'likedBy': [],
       'createdAt': FieldValue.serverTimestamp(),
     });
     await FirebaseFirestore.instance
@@ -2210,16 +2657,35 @@ class _CommentsSheetState extends State<CommentsSheet> {
     if (mounted) setState(() => _loading = false);
   }
 
+  Future<void> _likeComment(String commentId, List likedBy) async {
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (uid == null) return;
+    final ref = FirebaseFirestore.instance
+        .collection('topics').doc(widget.topicId)
+        .collection('comments').doc(commentId);
+    if (likedBy.contains(uid)) {
+      await ref.update({
+        'likes': FieldValue.increment(-1),
+        'likedBy': FieldValue.arrayRemove([uid]),
+      });
+    } else {
+      await ref.update({
+        'likes': FieldValue.increment(1),
+        'likedBy': FieldValue.arrayUnion([uid]),
+      });
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return DraggableScrollableSheet(
-      initialChildSize: 0.7,
+      initialChildSize: 0.75,
       maxChildSize: 0.95,
-      minChildSize: 0.4,
+      minChildSize: 0.5,
       expand: false,
       builder: (ctx, scrollCtrl) => Column(children: [
         Container(
-          padding: const EdgeInsets.symmetric(vertical: 12),
+          padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
           decoration: BoxDecoration(
               color: kCard,
               borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
@@ -2228,7 +2694,10 @@ class _CommentsSheetState extends State<CommentsSheet> {
             Container(width: 36, height: 4,
                 decoration: BoxDecoration(color: kBorder, borderRadius: BorderRadius.circular(2))),
             const SizedBox(height: 12),
-            const Text('コメント', style: TextStyle(fontSize: 15, fontWeight: FontWeight.w800)),
+            const Text('議論バトル', style: TextStyle(fontSize: 15, fontWeight: FontWeight.w800)),
+            const SizedBox(height: 4),
+            const Text('「納得」を集めた意見はオッズが上がります',
+                style: TextStyle(fontSize: 10, color: kFaint)),
           ]),
         ),
         Expanded(
@@ -2236,48 +2705,54 @@ class _CommentsSheetState extends State<CommentsSheet> {
             stream: FirebaseFirestore.instance
                 .collection('topics').doc(widget.topicId)
                 .collection('comments')
-                .orderBy('createdAt', descending: false)
+                .orderBy('likes', descending: true)
                 .snapshots(),
             builder: (ctx, snap) {
               if (!snap.hasData) return const Center(child: CircularProgressIndicator(color: kPrimary));
               final comments = snap.data!.docs;
+              final myUid = FirebaseAuth.instance.currentUser?.uid;
+
               if (comments.isEmpty) {
-                return const Center(child: Text('まだコメントがありません',
-                    style: TextStyle(color: kFaint, fontSize: 13)));
+                return Center(child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+                  const Icon(Icons.forum_outlined, size: 48, color: kFaint),
+                  const SizedBox(height: 12),
+                  const Text('まだ意見がありません', style: TextStyle(color: kSoft, fontSize: 13)),
+                  const SizedBox(height: 8),
+                  const Text('最初の意見を投稿してみましょう！', style: TextStyle(color: kFaint, fontSize: 11)),
+                ]));
               }
-              return ListView.builder(
+
+              final yesComments = comments.where((d) => (d.data() as Map)['stance'] == 'yes').toList();
+              final noComments = comments.where((d) => (d.data() as Map)['stance'] == 'no').toList();
+
+              return ListView(
                 controller: scrollCtrl,
                 padding: const EdgeInsets.all(14),
-                itemCount: comments.length,
-                itemBuilder: (ctx, i) {
-                  final c = comments[i].data() as Map<String, dynamic>;
-                  return Padding(
-                    padding: const EdgeInsets.only(bottom: 14),
-                    child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                      CircleAvatar(radius: 14, backgroundColor: kPrimary,
-                          child: Text(
-                            (c['authorName'] ?? '?').isNotEmpty
-                                ? c['authorName'][0].toUpperCase() : '?',
-                            style: const TextStyle(color: Colors.white, fontSize: 11,
-                                fontWeight: FontWeight.w700),
-                          )),
-                      const SizedBox(width: 10),
-                      Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                        Text(c['authorName'] ?? '',
-                            style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w700)),
-                        const SizedBox(height: 3),
-                        Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                          decoration: BoxDecoration(
-                              color: const Color(0xFFF1F3F7),
-                              borderRadius: BorderRadius.circular(12)),
-                          child: Text(c['text'] ?? '',
-                              style: const TextStyle(fontSize: 13, color: Color(0xFF1A1D29))),
-                        ),
-                      ])),
-                    ]),
-                  );
-                },
+                children: [
+                  // YES側
+                  if (yesComments.isNotEmpty) ...[
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                      decoration: BoxDecoration(color: kYesBg, borderRadius: BorderRadius.circular(6)),
+                      child: Text('✓ YES派の意見 (${yesComments.length})',
+                          style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: kYes)),
+                    ),
+                    const SizedBox(height: 8),
+                    ...yesComments.map((doc) => _commentItem(doc, myUid, kYes, kYesBg)),
+                    const SizedBox(height: 16),
+                  ],
+                  // NO側
+                  if (noComments.isNotEmpty) ...[
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                      decoration: BoxDecoration(color: kNoBg, borderRadius: BorderRadius.circular(6)),
+                      child: Text('✗ NO派の意見 (${noComments.length})',
+                          style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: kNo)),
+                    ),
+                    const SizedBox(height: 8),
+                    ...noComments.map((doc) => _commentItem(doc, myUid, kNo, kNoBg)),
+                  ],
+                ],
               );
             },
           ),
@@ -2288,32 +2763,113 @@ class _CommentsSheetState extends State<CommentsSheet> {
               bottom: MediaQuery.of(context).viewInsets.bottom + 10),
           decoration: BoxDecoration(color: kCard,
               border: Border(top: BorderSide(color: kBorder))),
-          child: Row(children: [
-            Expanded(child: TextField(
-              controller: _ctrl,
-              decoration: InputDecoration(
-                hintText: 'コメントを入力...',
-                filled: true, fillColor: const Color(0xFFF1F3F7),
-                border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(24),
-                    borderSide: BorderSide.none),
-                contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+          child: Column(mainAxisSize: MainAxisSize.min, children: [
+            // YES/NO スタンス選択
+            Row(children: [
+              Expanded(child: GestureDetector(
+                onTap: () => setState(() => _stance = 'yes'),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(vertical: 8),
+                  decoration: BoxDecoration(
+                    color: _stance == 'yes' ? kYes : kBg,
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: _stance == 'yes' ? kYes : kBorder),
+                  ),
+                  child: Text('✓ YES派として投稿',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700,
+                          color: _stance == 'yes' ? Colors.white : kFaint)),
+                ),
+              )),
+              const SizedBox(width: 8),
+              Expanded(child: GestureDetector(
+                onTap: () => setState(() => _stance = 'no'),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(vertical: 8),
+                  decoration: BoxDecoration(
+                    color: _stance == 'no' ? kNo : kBg,
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: _stance == 'no' ? kNo : kBorder),
+                  ),
+                  child: Text('✗ NO派として投稿',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700,
+                          color: _stance == 'no' ? Colors.white : kFaint)),
+                ),
+              )),
+            ]),
+            const SizedBox(height: 8),
+            Row(children: [
+              Expanded(child: TextField(
+                controller: _ctrl,
+                decoration: InputDecoration(
+                  hintText: '根拠を入力...「納得」を集めるとオッズUP！',
+                  filled: true, fillColor: const Color(0xFFF1F3F7),
+                  border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(24),
+                      borderSide: BorderSide.none),
+                  contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                ),
+              )),
+              const SizedBox(width: 8),
+              GestureDetector(
+                onTap: _loading ? null : _post,
+                child: Container(
+                  width: 44, height: 44,
+                  decoration: BoxDecoration(
+                    color: _stance == 'yes' ? kYes : kNo,
+                    shape: BoxShape.circle,
+                  ),
+                  child: _loading
+                      ? const Padding(padding: EdgeInsets.all(12),
+                          child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2))
+                      : const Icon(Icons.send, color: Colors.white, size: 18),
+                ),
               ),
-            )),
-            const SizedBox(width: 8),
-            GestureDetector(
-              onTap: _loading ? null : _post,
-              child: Container(
-                width: 44, height: 44,
-                decoration: const BoxDecoration(color: kPrimary, shape: BoxShape.circle),
-                child: _loading
-                    ? const Padding(padding: EdgeInsets.all(12),
-                        child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2))
-                    : const Icon(Icons.send, color: Colors.white, size: 18),
-              ),
-            ),
+            ]),
           ]),
         ),
+      ]),
+    );
+  }
+
+  Widget _commentItem(DocumentSnapshot doc, String? myUid, Color stanceColor, Color stanceBg) {
+    final c = doc.data() as Map<String, dynamic>;
+    final likes = c['likes'] ?? 0;
+    final likedBy = List<String>.from(c['likedBy'] ?? []);
+    final isLiked = myUid != null && likedBy.contains(myUid);
+    final name = c['authorName'] ?? '?';
+
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 12),
+      child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        CircleAvatar(radius: 14, backgroundColor: stanceColor,
+            child: Text(name.isNotEmpty ? name[0].toUpperCase() : '?',
+                style: const TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.w700))),
+        const SizedBox(width: 10),
+        Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Text(name, style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w700)),
+          const SizedBox(height: 3),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+            decoration: BoxDecoration(color: stanceBg, borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: stanceColor.withOpacity(.2))),
+            child: Text(c['text'] ?? '',
+                style: const TextStyle(fontSize: 13, color: Color(0xFF1A1D29))),
+          ),
+          const SizedBox(height: 4),
+          GestureDetector(
+            onTap: () => _likeComment(doc.id, likedBy),
+            child: Row(mainAxisSize: MainAxisSize.min, children: [
+              Icon(isLiked ? Icons.thumb_up : Icons.thumb_up_outlined,
+                  size: 14, color: isLiked ? kPrimary : kFaint),
+              const SizedBox(width: 4),
+              Text('納得 $likes',
+                  style: TextStyle(fontSize: 10, color: isLiked ? kPrimary : kFaint,
+                      fontWeight: isLiked ? FontWeight.w700 : FontWeight.normal)),
+            ]),
+          ),
+        ])),
       ]),
     );
   }
@@ -2405,6 +2961,526 @@ class _UserSearchSheetState extends State<UserSearchSheet> {
         ]),
       ),
     );
+  }
+}
+
+// ── オカルト大陪審：証拠シート ───────────────────────────
+class EvidenceSheet extends StatefulWidget {
+  final Topic topic;
+  const EvidenceSheet({super.key, required this.topic});
+  @override
+  State<EvidenceSheet> createState() => _EvidenceSheetState();
+}
+
+class _EvidenceSheetState extends State<EvidenceSheet> {
+  final _urlCtrl = TextEditingController();
+  final _descCtrl = TextEditingController();
+  String _verdict = 'true'; // true or false
+  bool _loading = false;
+
+  Future<void> _submit() async {
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (uid == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('ログインが必要です')));
+      return;
+    }
+    if (_descCtrl.text.trim().isEmpty) return;
+    setState(() => _loading = true);
+    final userDoc = await FirebaseFirestore.instance.doc('users/$uid').get();
+    await FirebaseFirestore.instance
+        .collection('topics').doc(widget.topic.id)
+        .collection('evidence').add({
+      'uid': uid,
+      'authorName': userDoc.data()?['name'] ?? '',
+      'description': _descCtrl.text.trim(),
+      'url': _urlCtrl.text.trim(),
+      'verdict': _verdict,
+      'votes': 0,
+      'votedBy': [],
+      'createdAt': FieldValue.serverTimestamp(),
+    });
+    _urlCtrl.clear();
+    _descCtrl.clear();
+    if (mounted) setState(() => _loading = false);
+    if (mounted) ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('✅ 証拠を提出しました')));
+  }
+
+  Future<void> _voteEvidence(String evId, List votedBy, String verdict) async {
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (uid == null) return;
+    final ref = FirebaseFirestore.instance
+        .collection('topics').doc(widget.topic.id)
+        .collection('evidence').doc(evId);
+    if (votedBy.contains(uid)) {
+      await ref.update({'votes': FieldValue.increment(-1), 'votedBy': FieldValue.arrayRemove([uid])});
+    } else {
+      await ref.update({'votes': FieldValue.increment(1), 'votedBy': FieldValue.arrayUnion([uid])});
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return DraggableScrollableSheet(
+      initialChildSize: 0.85,
+      maxChildSize: 0.95,
+      minChildSize: 0.5,
+      expand: false,
+      builder: (ctx, scrollCtrl) => Container(
+        decoration: const BoxDecoration(
+          color: Color(0xFF0d0f1a),
+          borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+        ),
+        child: Column(children: [
+          Container(
+            padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 16),
+            decoration: BoxDecoration(
+              color: const Color(0xFF141728),
+              border: Border(bottom: BorderSide(color: const Color(0xFF252A45))),
+            ),
+            child: Column(children: [
+              Container(width: 36, height: 4,
+                  decoration: BoxDecoration(color: const Color(0xFF252A45),
+                      borderRadius: BorderRadius.circular(2))),
+              const SizedBox(height: 12),
+              const Row(mainAxisAlignment: MainAxisAlignment.center, children: [
+                Text('🔮 ', style: TextStyle(fontSize: 20)),
+                Text('オカルト大陪審', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w800, color: Color(0xFFB197FC))),
+              ]),
+              const SizedBox(height: 4),
+              Text(widget.topic.question,
+                  style: const TextStyle(fontSize: 11, color: Color(0xFF9775FA)),
+                  textAlign: TextAlign.center),
+            ]),
+          ),
+          Expanded(
+            child: StreamBuilder<QuerySnapshot>(
+              stream: FirebaseFirestore.instance
+                  .collection('topics').doc(widget.topic.id)
+                  .collection('evidence')
+                  .orderBy('votes', descending: true)
+                  .snapshots(),
+              builder: (ctx, snap) {
+                if (!snap.hasData) return const Center(
+                    child: CircularProgressIndicator(color: Color(0xFF7048E8)));
+                final evidences = snap.data!.docs;
+                final myUid = FirebaseAuth.instance.currentUser?.uid;
+
+                final trueEv = evidences.where((d) => (d.data() as Map)['verdict'] == 'true').toList();
+                final falseEv = evidences.where((d) => (d.data() as Map)['verdict'] == 'false').toList();
+                final trueVotes = trueEv.fold<int>(0, (s, d) => s + ((d.data() as Map)['votes'] ?? 0) as int);
+                final falseVotes = falseEv.fold<int>(0, (s, d) => s + ((d.data() as Map)['votes'] ?? 0) as int);
+                final total = trueVotes + falseVotes;
+
+                return ListView(controller: scrollCtrl, padding: const EdgeInsets.all(16), children: [
+                  // 大陪審スコア
+                  if (total > 0) Container(
+                    padding: const EdgeInsets.all(14),
+                    margin: const EdgeInsets.only(bottom: 16),
+                    decoration: BoxDecoration(
+                      gradient: const LinearGradient(colors: [Color(0xFF1a0533), Color(0xFF2d1465)]),
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: Column(children: [
+                      const Text('大陪審スコア', style: TextStyle(fontSize: 11, color: Color(0xFF9775FA), fontWeight: FontWeight.w700)),
+                      const SizedBox(height: 8),
+                      Row(children: [
+                        Expanded(child: Column(children: [
+                          Text('${total > 0 ? (trueVotes / total * 100).toStringAsFixed(0) : 0}%',
+                              style: const TextStyle(fontSize: 28, fontWeight: FontWeight.w800, color: Color(0xFF51CF66))),
+                          const Text('予言的中', style: TextStyle(fontSize: 10, color: Color(0xFF8CE99A))),
+                        ])),
+                        Container(width: 1, height: 40, color: const Color(0xFF252A45)),
+                        Expanded(child: Column(children: [
+                          Text('${total > 0 ? (falseVotes / total * 100).toStringAsFixed(0) : 0}%',
+                              style: const TextStyle(fontSize: 28, fontWeight: FontWeight.w800, color: Color(0xFFFF6B6B))),
+                          const Text('予言外れ', style: TextStyle(fontSize: 10, color: Color(0xFFFFB8B8))),
+                        ])),
+                      ]),
+                    ]),
+                  ),
+
+                  // 的中側の証拠
+                  if (trueEv.isNotEmpty) ...[
+                    const Text('✅ 的中の証拠', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w800, color: Color(0xFF51CF66))),
+                    const SizedBox(height: 8),
+                    ...trueEv.map((doc) => _evidenceItem(doc, myUid, const Color(0xFF51CF66))),
+                    const SizedBox(height: 16),
+                  ],
+                  // 外れ側の証拠
+                  if (falseEv.isNotEmpty) ...[
+                    const Text('❌ 外れの証拠', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w800, color: Color(0xFFFF6B6B))),
+                    const SizedBox(height: 8),
+                    ...falseEv.map((doc) => _evidenceItem(doc, myUid, const Color(0xFFFF6B6B))),
+                    const SizedBox(height: 16),
+                  ],
+
+                  if (evidences.isEmpty) Center(child: Column(children: [
+                    const SizedBox(height: 40),
+                    const Text('🔮', style: TextStyle(fontSize: 48)),
+                    const SizedBox(height: 12),
+                    const Text('まだ証拠がありません', style: TextStyle(color: Color(0xFF9775FA), fontSize: 13)),
+                    const Text('最初の証拠を提出してください', style: TextStyle(color: Color(0xFF4A5278), fontSize: 11)),
+                  ])),
+                ]);
+              },
+            ),
+          ),
+          // 証拠投稿フォーム
+          Container(
+            padding: EdgeInsets.only(
+                left: 16, right: 16, top: 12,
+                bottom: MediaQuery.of(context).viewInsets.bottom + 12),
+            decoration: const BoxDecoration(
+              color: Color(0xFF141728),
+              border: Border(top: BorderSide(color: Color(0xFF252A45))),
+            ),
+            child: Column(mainAxisSize: MainAxisSize.min, children: [
+              Row(children: [
+                Expanded(child: GestureDetector(
+                  onTap: () => setState(() => _verdict = 'true'),
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(vertical: 7),
+                    decoration: BoxDecoration(
+                      color: _verdict == 'true' ? const Color(0xFF2B8A3E) : Colors.transparent,
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: _verdict == 'true' ? const Color(0xFF51CF66) : const Color(0xFF252A45)),
+                    ),
+                    child: Text('✅ 的中の証拠', textAlign: TextAlign.center,
+                        style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700,
+                            color: _verdict == 'true' ? const Color(0xFF51CF66) : const Color(0xFF4A5278))),
+                  ),
+                )),
+                const SizedBox(width: 8),
+                Expanded(child: GestureDetector(
+                  onTap: () => setState(() => _verdict = 'false'),
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(vertical: 7),
+                    decoration: BoxDecoration(
+                      color: _verdict == 'false' ? const Color(0xFF862E2E) : Colors.transparent,
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: _verdict == 'false' ? const Color(0xFFFF6B6B) : const Color(0xFF252A45)),
+                    ),
+                    child: Text('❌ 外れの証拠', textAlign: TextAlign.center,
+                        style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700,
+                            color: _verdict == 'false' ? const Color(0xFFFF6B6B) : const Color(0xFF4A5278))),
+                  ),
+                )),
+              ]),
+              const SizedBox(height: 8),
+              TextField(
+                controller: _urlCtrl,
+                style: const TextStyle(color: Colors.white, fontSize: 12),
+                decoration: InputDecoration(
+                  hintText: 'ニュースURL（任意）',
+                  hintStyle: const TextStyle(color: Color(0xFF4A5278), fontSize: 12),
+                  filled: true, fillColor: const Color(0xFF1A1E35),
+                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none),
+                  contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                ),
+              ),
+              const SizedBox(height: 8),
+              Row(children: [
+                Expanded(child: TextField(
+                  controller: _descCtrl,
+                  style: const TextStyle(color: Colors.white, fontSize: 12),
+                  decoration: InputDecoration(
+                    hintText: '証拠の説明を入力...',
+                    hintStyle: const TextStyle(color: Color(0xFF4A5278), fontSize: 12),
+                    filled: true, fillColor: const Color(0xFF1A1E35),
+                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none),
+                    contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                  ),
+                )),
+                const SizedBox(width: 8),
+                GestureDetector(
+                  onTap: _loading ? null : _submit,
+                  child: Container(
+                    width: 44, height: 44,
+                    decoration: const BoxDecoration(color: Color(0xFF7048E8), shape: BoxShape.circle),
+                    child: _loading
+                        ? const Padding(padding: EdgeInsets.all(12),
+                            child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2))
+                        : const Icon(Icons.send, color: Colors.white, size: 18),
+                  ),
+                ),
+              ]),
+            ]),
+          ),
+        ]),
+      ),
+    );
+  }
+
+  Widget _evidenceItem(DocumentSnapshot doc, String? myUid, Color color) {
+    final e = doc.data() as Map<String, dynamic>;
+    final votes = e['votes'] ?? 0;
+    final votedBy = List<String>.from(e['votedBy'] ?? []);
+    final isVoted = myUid != null && votedBy.contains(myUid);
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 10),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: const Color(0xFF141728),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: color.withOpacity(.3)),
+      ),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Row(children: [
+          CircleAvatar(radius: 10, backgroundColor: color,
+              child: Text((e['authorName'] ?? '?')[0].toUpperCase(),
+                  style: const TextStyle(color: Colors.white, fontSize: 8, fontWeight: FontWeight.w700))),
+          const SizedBox(width: 6),
+          Text(e['authorName'] ?? '', style: const TextStyle(fontSize: 10, fontWeight: FontWeight.w700, color: Colors.white)),
+          const Spacer(),
+          GestureDetector(
+            onTap: () => _voteEvidence(doc.id, votedBy, e['verdict']),
+            child: Row(mainAxisSize: MainAxisSize.min, children: [
+              Icon(isVoted ? Icons.how_to_vote : Icons.how_to_vote_outlined,
+                  size: 14, color: isVoted ? color : const Color(0xFF4A5278)),
+              const SizedBox(width: 3),
+              Text('$votes', style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700,
+                  color: isVoted ? color : const Color(0xFF4A5278))),
+            ]),
+          ),
+        ]),
+        const SizedBox(height: 6),
+        Text(e['description'] ?? '', style: const TextStyle(fontSize: 12, color: Color(0xFFCCC2FF))),
+        if ((e['url'] ?? '').isNotEmpty) ...[
+          const SizedBox(height: 4),
+          Text(e['url'], style: const TextStyle(fontSize: 10, color: Color(0xFF7048E8),
+              decoration: TextDecoration.underline)),
+        ],
+      ]),
+    );
+  }
+}
+
+class _PremiumFeatureRow extends StatelessWidget {
+  final String icon;
+  final String text;
+  const _PremiumFeatureRow({required this.icon, required this.text});
+  @override
+  Widget build(BuildContext context) => Padding(
+    padding: const EdgeInsets.symmetric(vertical: 3),
+    child: Row(children: [
+      Text(icon, style: const TextStyle(fontSize: 14)),
+      const SizedBox(width: 8),
+      Text(text, style: const TextStyle(fontSize: 12, color: kSoft)),
+    ]),
+  );
+}
+
+// ── カテゴリトピック一覧画面 ─────────────────────────────
+class CategoryTopicsScreen extends StatelessWidget {
+  final String category;
+  final String label;
+  const CategoryTopicsScreen({super.key, required this.category, required this.label});
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: Text(label, style: const TextStyle(fontWeight: FontWeight.w800)),
+      ),
+      body: StreamBuilder<QuerySnapshot>(
+        stream: FirebaseFirestore.instance
+            .collection('topics')
+            .where('category', isEqualTo: category)
+            .orderBy('createdAt', descending: true)
+            .snapshots(),
+        builder: (ctx, snap) {
+          if (!snap.hasData) return const Center(
+              child: CircularProgressIndicator(color: kPrimary));
+          final topics = snap.data!.docs.map((d) => Topic.fromDoc(d)).toList();
+          if (topics.isEmpty) {
+            return Center(child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+              const Icon(Icons.bar_chart, size: 64, color: kFaint),
+              const SizedBox(height: 12),
+              Text('$labelのトピックはまだありません',
+                  style: const TextStyle(color: kSoft, fontSize: 14)),
+            ]));
+          }
+          return ListView.builder(
+            itemCount: topics.length,
+            itemBuilder: (ctx, i) => TopicCard(topic: topics[i]),
+          );
+        },
+      ),
+    );
+  }
+}
+
+// ── ランキング画面 ────────────────────────────────────
+class RankingScreen extends StatefulWidget {
+  const RankingScreen({super.key});
+  @override
+  State<RankingScreen> createState() => _RankingScreenState();
+}
+
+class _RankingScreenState extends State<RankingScreen> with SingleTickerProviderStateMixin {
+  late TabController _tabCtrl;
+
+  @override
+  void initState() {
+    super.initState();
+    _tabCtrl = TabController(length: 4, vsync: this);
+  }
+
+  @override
+  void dispose() {
+    _tabCtrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('ランキング', style: TextStyle(fontWeight: FontWeight.w800)),
+        bottom: TabBar(
+          controller: _tabCtrl,
+          labelColor: kPrimary,
+          unselectedLabelColor: kFaint,
+          indicatorColor: kPrimary,
+          isScrollable: true,
+          tabs: const [
+            Tab(text: '総合'),
+            Tab(text: '経済・金融'),
+            Tab(text: 'AI・テクノロジー'),
+            Tab(text: '政治・社会'),
+          ],
+        ),
+      ),
+      body: TabBarView(
+        controller: _tabCtrl,
+        children: [
+          _rankingList(null),
+          _rankingList('経済・金融'),
+          _rankingList('AI・テクノロジー'),
+          _rankingList('政治・社会'),
+        ],
+      ),
+    );
+  }
+
+  Widget _rankingList(String? category) {
+    return StreamBuilder<QuerySnapshot>(
+      stream: FirebaseFirestore.instance
+          .collection('users')
+          .orderBy('influence_score', descending: true)
+          .limit(50)
+          .snapshots(),
+      builder: (ctx, snap) {
+        if (!snap.hasData) return const Center(child: CircularProgressIndicator(color: kPrimary));
+        var users = snap.data!.docs
+            .map((d) => d.data() as Map<String, dynamic>)
+            .where((u) => (u['influence_score'] ?? 0) > 0)
+            .toList();
+
+        if (category != null) {
+          users = users.where((u) {
+            final acc = u['accuracy_by_category'] as Map?;
+            if (acc == null) return false;
+            return acc.containsKey(category);
+          }).toList();
+
+          users.sort((a, b) {
+            final accA = (a['accuracy_by_category'] as Map?)?[category] as Map?;
+            final accB = (b['accuracy_by_category'] as Map?)?[category] as Map?;
+            final scoreA = accA != null && (accA['total'] ?? 0) > 0
+                ? (accA['correct'] ?? 0) / (accA['total'] ?? 1) : 0.0;
+            final scoreB = accB != null && (accB['total'] ?? 0) > 0
+                ? (accB['correct'] ?? 0) / (accB['total'] ?? 1) : 0.0;
+            return scoreB.compareTo(scoreA);
+          });
+        }
+
+        if (users.isEmpty) {
+          return const Center(child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+            Icon(Icons.emoji_events_outlined, size: 64, color: kFaint),
+            SizedBox(height: 12),
+            Text('まだランキングデータがありません', style: TextStyle(color: kSoft, fontSize: 13)),
+            SizedBox(height: 8),
+            Text('予測して的中率を積み上げましょう', style: TextStyle(color: kFaint, fontSize: 11)),
+          ]));
+        }
+
+        return ListView.builder(
+          padding: const EdgeInsets.symmetric(vertical: 8),
+          itemCount: users.length,
+          itemBuilder: (ctx, i) {
+            final u = users[i];
+            final name = u['name'] ?? 'ユーザー';
+            final influenceScore = (u['influence_score'] ?? 0.0).toDouble();
+            final totalVotes = u['totalVotes'] ?? 0;
+            final expertise = List<String>.from(u['expertise'] ?? []);
+
+            double displayScore = influenceScore;
+            if (category != null) {
+              final acc = (u['accuracy_by_category'] as Map?)?[category] as Map?;
+              if (acc != null && (acc['total'] ?? 0) > 0) {
+                displayScore = (acc['correct'] ?? 0) / (acc['total'] ?? 1) * 100;
+              }
+            }
+
+            final medal = i == 0 ? '🥇' : i == 1 ? '🥈' : i == 2 ? '🥉' : '${i + 1}';
+
+            return Container(
+              margin: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
+              padding: const EdgeInsets.all(14),
+              decoration: BoxDecoration(
+                color: i < 3 ? [
+                  const Color(0xFFFFF8E6),
+                  const Color(0xFFF5F5F5),
+                  const Color(0xFFFFF3EE),
+                ][i] : kCard,
+                borderRadius: BorderRadius.circular(14),
+                border: Border.all(color: i < 3 ? [kGold, kBorder, kNo.withOpacity(.3)][i] : kBorder),
+              ),
+              child: Row(children: [
+                SizedBox(width: 32, child: Text(medal,
+                    style: TextStyle(fontSize: i < 3 ? 22 : 14, fontWeight: FontWeight.w800,
+                        color: i < 3 ? [kGold, kSoft, kNo][i] : kFaint),
+                    textAlign: TextAlign.center)),
+                const SizedBox(width: 10),
+                CircleAvatar(
+                  radius: 20,
+                  backgroundColor: _parseColor(u['color'] ?? '#3b5bdb'),
+                  child: Text(name.isNotEmpty ? name[0].toUpperCase() : '?',
+                      style: const TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.w700)),
+                ),
+                const SizedBox(width: 12),
+                Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  Text(name, style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w800)),
+                  if (expertise.isNotEmpty)
+                    Text(expertise.take(2).join(' · '),
+                        style: const TextStyle(fontSize: 10, color: kFaint)),
+                  Text(getTitleFromUserData(u), style: const TextStyle(fontSize: 10, color: kFaint)),
+                  Text('\$totalVotes予測', style: const TextStyle(fontSize: 10, color: kFaint)),
+                ])),
+                Column(crossAxisAlignment: CrossAxisAlignment.end, children: [
+                  Text('${displayScore.toStringAsFixed(1)}pt',
+                      style: TextStyle(
+                        fontSize: 18, fontWeight: FontWeight.w800,
+                        color: i == 0 ? kGold : i == 1 ? kSoft : i == 2 ? kNo : kPrimary,
+                      )),
+                  Text(category == null ? '影響力スコア' : '的中率',
+                      style: const TextStyle(fontSize: 9, color: kFaint)),
+                ]),
+              ]),
+            );
+          },
+        );
+      },
+    );
+  }
+
+  Color _parseColor(String hex) {
+    try { return Color(int.parse(hex.replaceFirst('#', '0xFF'))); }
+    catch (_) { return kPrimary; }
   }
 }
 
