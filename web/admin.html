@@ -7,7 +7,7 @@
 <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;600;700;800&family=Noto+Sans+JP:wght@400;500;700&display=swap" rel="stylesheet">
 <script type="module">
 import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.7.0/firebase-app.js';
-import { getFirestore, collection, getDocs, doc, updateDoc, getDoc, query, orderBy } from 'https://www.gstatic.com/firebasejs/10.7.0/firebase-firestore.js';
+import { getFirestore, collection, getDocs, doc, updateDoc, getDoc, addDoc, query, orderBy, serverTimestamp } from 'https://www.gstatic.com/firebasejs/10.7.0/firebase-firestore.js';
 import { getAuth, onAuthStateChanged } from 'https://www.gstatic.com/firebasejs/10.7.0/firebase-auth.js';
 
 const FIREBASE_CONFIG = {
@@ -26,7 +26,6 @@ const auth = getAuth(app);
 
 let allUsers = [], allTopics = [], allPredictions = [];
 
-// ── データ読み込み ──────────────────────────────────────
 async function loadData() {
   document.getElementById('loading').style.display = 'flex';
   try {
@@ -51,12 +50,10 @@ function renderAll() {
   populateTopicSelect();
 }
 
-// ── 概要 ───────────────────────────────────────────────
 function renderOverview() {
   const withAttr = allUsers.filter(u => u.age || u.gender || u.prefecture || u.job).length;
   const resolved = allTopics.filter(t => t.resolved).length;
   const avgInfluence = allUsers.length ? (allUsers.reduce((s,u) => s+(u.influence_score||0),0)/allUsers.length).toFixed(1) : 0;
-
   document.getElementById('stat-users').textContent = allUsers.length;
   document.getElementById('stat-predictions').textContent = allPredictions.length;
   document.getElementById('stat-topics').textContent = allTopics.length;
@@ -65,7 +62,6 @@ function renderOverview() {
   document.getElementById('stat-influence').textContent = avgInfluence;
 }
 
-// ── B2Bデータ ──────────────────────────────────────────
 function renderB2BData() {
   renderDemographics();
   renderCategoryInsights();
@@ -81,20 +77,14 @@ function renderDemographics() {
     if (u.prefecture) prefMap[u.prefecture] = (prefMap[u.prefecture]||0)+1;
     if (u.job) jobMap[u.job] = (jobMap[u.job]||0)+1;
   });
-
   const renderBar = (map, container) => {
     const total = Object.values(map).reduce((a,b)=>a+b,0) || 1;
     const sorted = Object.entries(map).sort((a,b)=>b[1]-a[1]);
     document.getElementById(container).innerHTML = sorted.map(([k,v]) => {
       const pct = (v/total*100).toFixed(0);
-      return `<div class="demo-row">
-        <span class="demo-lbl">${k}</span>
-        <div class="demo-bar-wrap"><div class="demo-bar" style="width:${pct}%"></div></div>
-        <span class="demo-val">${v}人 (${pct}%)</span>
-      </div>`;
+      return `<div class="demo-row"><span class="demo-lbl">${k}</span><div class="demo-bar-wrap"><div class="demo-bar" style="width:${pct}%"></div></div><span class="demo-val">${v}人 (${pct}%)</span></div>`;
     }).join('') || '<p class="empty">データなし</p>';
   };
-
   renderBar(ageMap, 'age-chart');
   renderBar(genderMap, 'gender-chart');
   renderBar(prefMap, 'pref-chart');
@@ -102,19 +92,13 @@ function renderDemographics() {
 }
 
 function renderCategoryInsights() {
-  const cats = ['経済・金融', 'AI・テクノロジー', '政治・社会', '未確認現象・予言'];
+  const cats = ['経済・金融', 'AI・テクノロジー', '政治・社会', '未確認現象・予言', 'スポーツ・エンタメ'];
   const html = cats.map(cat => {
     const catPreds = allPredictions.filter(p => p.category === cat);
     const resolved = catPreds.filter(p => p.resolved);
-    const correct = resolved.filter(p => {
-      const topic = allTopics.find(t => t.id === p.topicId);
-      return topic && p.prediction_value === topic.actualResult;
-    });
+    const correct = resolved.filter(p => { const t = allTopics.find(t => t.id === p.topicId); return t && p.prediction_value === t.actualResult; });
     const accuracy = resolved.length > 0 ? (correct.length/resolved.length*100).toFixed(0) : '-';
-    const avgConf = catPreds.length > 0
-      ? (catPreds.reduce((s,p)=>s+(p.confidence||70),0)/catPreds.length).toFixed(0) : '-';
-
-    // 属性別精度
+    const avgConf = catPreds.length > 0 ? (catPreds.reduce((s,p)=>s+(p.confidence||70),0)/catPreds.length).toFixed(0) : '-';
     const byAge = {};
     catPreds.forEach(p => {
       const user = allUsers.find(u => u.id === p.uid);
@@ -125,64 +109,31 @@ function renderCategoryInsights() {
         if (topic?.resolved && p.prediction_value === topic.actualResult) byAge[user.age].correct++;
       }
     });
-
     const ageRows = Object.entries(byAge).map(([age, data]) => {
       const rate = data.total > 0 ? (data.correct/data.total*100).toFixed(0) : '-';
       return `<span class="attr-tag">${age}: ${rate}%</span>`;
     }).join('');
-
-    const color = accuracy >= 70 ? '#0ca678' : accuracy >= 50 ? '#f59f00' : '#e8590c';
-
-    return `<div class="cat-insight-card">
-      <div class="cat-insight-header">
-        <span class="cat-name">${cat}</span>
-        <span class="cat-accuracy" style="color:${color}">${accuracy}%</span>
-      </div>
-      <div class="cat-stats">
-        <div class="cat-stat"><span class="cs-val">${catPreds.length}</span><span class="cs-lbl">総予測数</span></div>
-        <div class="cat-stat"><span class="cs-val">${resolved.length}</span><span class="cs-lbl">判定済み</span></div>
-        <div class="cat-stat"><span class="cs-val">${avgConf}%</span><span class="cs-lbl">平均確信度</span></div>
-      </div>
-      ${ageRows ? `<div class="attr-tags"><span class="attr-label">年代別精度：</span>${ageRows}</div>` : ''}
-    </div>`;
+    const color = accuracy >= 70 ? '#0ca678' : accuracy >= 50 ? '#e67700' : '#e8590c';
+    return `<div class="cat-insight-card"><div class="cat-insight-header"><span class="cat-name">${cat}</span><span class="cat-accuracy" style="color:${color}">${accuracy}%</span></div><div class="cat-stats"><div class="cat-stat"><span class="cs-val">${catPreds.length}</span><span class="cs-lbl">総予測数</span></div><div class="cat-stat"><span class="cs-val">${resolved.length}</span><span class="cs-lbl">判定済み</span></div><div class="cat-stat"><span class="cs-val">${avgConf}%</span><span class="cs-lbl">平均確信度</span></div></div>${ageRows ? `<div class="attr-tags"><span class="attr-label">年代別精度：</span>${ageRows}</div>` : ''}</div>`;
   }).join('');
   document.getElementById('cat-insights').innerHTML = html;
 }
 
 function renderVelocityInsights() {
-  // 予測変化データ
   const changers = allPredictions.filter(p => p.change_count > 0);
   const changeReasons = {};
-  changers.forEach(p => {
-    (p.history || []).forEach(h => {
-      const r = h.reason || '不明';
-      changeReasons[r] = (changeReasons[r]||0)+1;
-    });
-  });
-
+  changers.forEach(p => { (p.history||[]).forEach(h => { const r = h.reason||'不明'; changeReasons[r]=(changeReasons[r]||0)+1; }); });
   const total = Object.values(changeReasons).reduce((a,b)=>a+b,0) || 1;
   const html = Object.entries(changeReasons).sort((a,b)=>b[1]-a[1]).map(([r,v]) => {
     const pct = (v/total*100).toFixed(0);
-    return `<div class="demo-row">
-      <span class="demo-lbl">${r}</span>
-      <div class="demo-bar-wrap"><div class="demo-bar" style="width:${pct}%;background:#7048e8"></div></div>
-      <span class="demo-val">${v}件 (${pct}%)</span>
-    </div>`;
+    return `<div class="demo-row"><span class="demo-lbl">${r}</span><div class="demo-bar-wrap"><div class="demo-bar" style="width:${pct}%;background:#7048e8"></div></div><span class="demo-val">${v}件 (${pct}%)</span></div>`;
   }).join('') || '<p class="empty">予測変更データなし</p>';
-
   document.getElementById('velocity-chart').innerHTML = html;
-  document.getElementById('velocity-stats').innerHTML = `
-    <div class="v-stat">予測変更者数: <strong>${changers.length}人</strong></div>
-    <div class="v-stat">変更率: <strong>${allPredictions.length ? (changers.length/allPredictions.length*100).toFixed(1) : 0}%</strong></div>
-  `;
+  document.getElementById('velocity-stats').innerHTML = `<div class="v-stat">予測変更者数: <strong>${changers.length}人</strong></div><div class="v-stat">変更率: <strong>${allPredictions.length ? (changers.length/allPredictions.length*100).toFixed(1) : 0}%</strong></div>`;
 }
 
 function renderTopPredictors() {
-  const top = [...allUsers]
-    .filter(u => (u.influence_score||0) > 0)
-    .sort((a,b) => (b.influence_score||0)-(a.influence_score||0))
-    .slice(0, 10);
-
+  const top = [...allUsers].filter(u => (u.influence_score||0) > 0).sort((a,b) => (b.influence_score||0)-(a.influence_score||0)).slice(0, 10);
   const html = top.map((u, i) => {
     const acc = u.accuracy_by_category || {};
     const totalCorrect = Object.values(acc).reduce((s,c)=>s+(c.correct||0),0);
@@ -190,147 +141,85 @@ function renderTopPredictors() {
     const accuracy = totalAll > 0 ? (totalCorrect/totalAll*100).toFixed(0) : '-';
     const expertise = (u.expertise||[]).join(', ') || '-';
     const demo = [u.age, u.gender, u.prefecture, u.job].filter(Boolean).join(' / ') || '未入力';
-
-    return `<tr>
-      <td><strong>#${i+1}</strong></td>
-      <td>${u.name||'不明'}</td>
-      <td><span class="score-badge">${(u.influence_score||0).toFixed(1)}</span></td>
-      <td>${accuracy}%</td>
-      <td>${u.totalVotes||0}</td>
-      <td><small>${expertise}</small></td>
-      <td><small class="demo-text">${demo}</small></td>
-    </tr>`;
+    return `<tr><td><strong>#${i+1}</strong></td><td>${u.name||'不明'}</td><td><span class="score-badge">${(u.influence_score||0).toFixed(1)}</span></td><td>${accuracy}%</td><td>${u.totalVotes||0}</td><td><small>${expertise}</small></td><td><small class="demo-text">${demo}</small></td></tr>`;
   }).join('');
-
   document.getElementById('top-predictors').innerHTML = html || '<tr><td colspan="7" class="empty">データなし</td></tr>';
 }
 
-// ── ユーザー一覧 ───────────────────────────────────────
 function renderUsers() {
   const sorted = [...allUsers].sort((a,b)=>(b.influence_score||0)-(a.influence_score||0));
   const html = sorted.map(u => {
     const acc = u.accuracy_by_category || {};
     const accRows = Object.entries(acc).map(([cat, d]) => {
       const rate = d.total > 0 ? (d.correct/d.total*100).toFixed(0) : 0;
-      const color = rate >= 70 ? '#0ca678' : rate >= 50 ? '#f59f00' : '#e8590c';
+      const color = rate >= 70 ? '#0ca678' : rate >= 50 ? '#e67700' : '#e8590c';
       return `<span class="acc-tag" style="color:${color}">${cat}: ${rate}% (${d.total}件)</span>`;
     }).join('');
-
-    const demo = [
-      u.age && `<span class="demo-chip">${u.age}</span>`,
-      u.gender && `<span class="demo-chip">${u.gender}</span>`,
-      u.prefecture && `<span class="demo-chip">${u.prefecture}</span>`,
-      u.job && `<span class="demo-chip">${u.job}</span>`,
-    ].filter(Boolean).join('');
-
-    return `<div class="user-row">
-      <div class="user-row-header">
-        <div class="avatar" style="background:${u.color||'#3b5bdb'}">${(u.name||'?')[0].toUpperCase()}</div>
-        <div class="user-row-info">
-          <span class="user-row-name">${u.name||'不明'}</span>
-          <span class="user-row-id">${u.id}</span>
-        </div>
-        <div class="user-row-stats">
-          <span class="influence-score">${(u.influence_score||0).toFixed(1)}pt</span>
-          <span class="total-votes">${u.totalVotes||0}予測</span>
-          <span class="points">${u.points||0}pt保有</span>
-        </div>
-        <div>
-          <button class="premium-btn ${u.isPremium ? 'active' : ''}"
-            onclick="togglePremium('${u.id}', ${!u.isPremium})">
-            ${u.isPremium ? '⭐ Premium' : 'Premium化'}
-          </button>
-        </div>
-      </div>
-      ${demo ? `<div class="demo-tags">${demo}</div>` : ''}
-      ${(u.expertise||[]).length ? `<div class="expertise-tags">${(u.expertise||[]).map(e=>`<span class="exp-tag">${e}</span>`).join('')}</div>` : ''}
-      ${accRows ? `<div class="acc-tags">${accRows}</div>` : ''}
-    </div>`;
+    const demo = [u.age&&`<span class="demo-chip">${u.age}</span>`,u.gender&&`<span class="demo-chip">${u.gender}</span>`,u.prefecture&&`<span class="demo-chip">${u.prefecture}</span>`,u.job&&`<span class="demo-chip">${u.job}</span>`].filter(Boolean).join('');
+    return `<div class="user-row"><div class="user-row-header"><div class="avatar" style="background:${u.color||'#3b5bdb'}">${(u.name||'?')[0].toUpperCase()}</div><div class="user-row-info"><span class="user-row-name">${u.name||'不明'}</span><span class="user-row-id">${u.id}</span></div><div class="user-row-stats"><span class="influence-score">${(u.influence_score||0).toFixed(1)}pt</span><span class="total-votes">${u.totalVotes||0}予測</span><span class="points">${u.points||0}pt保有</span></div><div><button class="premium-btn ${u.isPremium?'active':''}" onclick="togglePremium('${u.id}', ${!u.isPremium})">${u.isPremium?'⭐ Premium':'Premium化'}</button></div></div>${demo?`<div class="demo-tags">${demo}</div>`:''}${(u.expertise||[]).length?`<div class="expertise-tags">${(u.expertise||[]).map(e=>`<span class="exp-tag">${e}</span>`).join('')}</div>`:''}${accRows?`<div class="acc-tags">${accRows}</div>`:''}</div>`;
   }).join('');
   document.getElementById('users-list').innerHTML = html || '<p class="empty">ユーザーなし</p>';
 }
 
-// ── トピック管理 ───────────────────────────────────────
 function renderTopics() {
   const html = allTopics.map(t => {
     const total = (t.yesCount||0) + (t.noCount||0);
     const yesPct = total > 0 ? (t.yesCount/total*100).toFixed(0) : 50;
     const topicPreds = allPredictions.filter(p => p.topicId === t.id);
-
-    // 属性別予測分布
     const byGender = {}, byAge = {};
     topicPreds.forEach(p => {
       const u = allUsers.find(u => u.id === p.uid);
-      if (u?.gender) {
-        if (!byGender[u.gender]) byGender[u.gender] = {yes:0,no:0};
-        byGender[u.gender][p.prediction_value]++;
-      }
-      if (u?.age) {
-        if (!byAge[u.age]) byAge[u.age] = {yes:0,no:0};
-        byAge[u.age][p.prediction_value]++;
-      }
+      if (u?.gender) { if (!byGender[u.gender]) byGender[u.gender]={yes:0,no:0}; byGender[u.gender][p.prediction_value]++; }
+      if (u?.age) { if (!byAge[u.age]) byAge[u.age]={yes:0,no:0}; byAge[u.age][p.prediction_value]++; }
     });
-
-    const genderRows = Object.entries(byGender).map(([g,d]) => {
-      const tot = (d.yes||0)+(d.no||0);
-      const yp = tot > 0 ? ((d.yes||0)/tot*100).toFixed(0) : '-';
-      return `<span class="attr-tag">${g}: YES${yp}%</span>`;
-    }).join('');
-
-    const ageRows = Object.entries(byAge).map(([a,d]) => {
-      const tot = (d.yes||0)+(d.no||0);
-      const yp = tot > 0 ? ((d.yes||0)/tot*100).toFixed(0) : '-';
-      return `<span class="attr-tag">${a}: YES${yp}%</span>`;
-    }).join('');
-
-    const status = t.resolved
-      ? `<span class="badge-resolved">${t.actualResult==='yes'?'✓ YES的中':'✓ NO的中'}</span>`
-      : `<span class="badge-pending">判定待ち</span>`;
-
-    const actionBtns = !t.resolved ? `
-      <button class="btn-yes" onclick="resolveAdmin('${t.id}','yes')">YES 的中</button>
-      <button class="btn-no" onclick="resolveAdmin('${t.id}','no')">NO 的中</button>
-    ` : '';
-
-    return `<div class="topic-card ${t.resolved?'resolved':''}">
-      <div class="topic-header">
-        <span class="topic-cat">${t.category||''}</span>
-        ${status}
-        ${t.sponsored?'<span class="badge-sponsored">SPONSORED</span>':''}
-      </div>
-      <div class="topic-q">${t.question}</div>
-      ${t.judgeCondition?`<div class="judge-condition">⚖️ ${t.judgeCondition}</div>`:''}
-      <div class="topic-meta">
-        <span>投稿者: ${t.authorName||'不明'}</span>
-        <span>締切: ${t.deadline||''}</span>
-        <span>予測数: ${total}</span>
-        <span style="color:#3b5bdb">影響力: ${(t.authorInfluenceScore||0).toFixed(1)}</span>
-      </div>
-      <div class="vote-row">
-        <div class="vote-bars">
-          <div class="vb-row">
-            <span class="vb-lbl yes">YES</span>
-            <div class="vb-wrap"><div class="vb-fill yes" style="width:${yesPct}%"></div></div>
-            <span class="vb-pct">${yesPct}%</span>
-          </div>
-          <div class="vb-row">
-            <span class="vb-lbl no">NO</span>
-            <div class="vb-wrap"><div class="vb-fill no" style="width:${100-yesPct}%"></div></div>
-            <span class="vb-pct">${100-yesPct}%</span>
-          </div>
-        </div>
-        <div class="attr-breakdown">
-          ${genderRows ? `<div><small>性別別:</small> ${genderRows}</div>` : ''}
-          ${ageRows ? `<div><small>年代別:</small> ${ageRows}</div>` : ''}
-        </div>
-      </div>
-      ${actionBtns?`<div class="action-row">${actionBtns}</div>`:''}
-    </div>`;
+    const genderRows = Object.entries(byGender).map(([g,d]) => { const tot=(d.yes||0)+(d.no||0); const yp=tot>0?((d.yes||0)/tot*100).toFixed(0):'-'; return `<span class="attr-tag">${g}: YES${yp}%</span>`; }).join('');
+    const ageRows = Object.entries(byAge).map(([a,d]) => { const tot=(d.yes||0)+(d.no||0); const yp=tot>0?((d.yes||0)/tot*100).toFixed(0):'-'; return `<span class="attr-tag">${a}: YES${yp}%</span>`; }).join('');
+    const status = t.resolved ? `<span class="badge-resolved">${t.actualResult==='yes'?'✓ YES的中':'✓ NO的中'}</span>` : `<span class="badge-pending">判定待ち</span>`;
+    const actionBtns = !t.resolved ? `<button class="btn-yes" onclick="resolveAdmin('${t.id}','yes')">YES 的中</button><button class="btn-no" onclick="resolveAdmin('${t.id}','no')">NO 的中</button>` : '';
+    return `<div class="topic-card ${t.resolved?'resolved':''}"><div class="topic-header"><span class="topic-cat">${t.category||''}</span>${status}${t.sponsored?'<span class="badge-sponsored">SPONSORED</span>':''}</div><div class="topic-q">${t.question}</div>${t.judgeCondition?`<div class="judge-condition">⚖️ ${t.judgeCondition}</div>`:''}<div class="topic-meta"><span>投稿者: ${t.authorName||'不明'}</span><span>締切: ${t.deadline||''}</span><span>予測数: ${total}</span><span style="color:#3b5bdb">影響力: ${(t.authorInfluenceScore||0).toFixed(1)}</span></div><div class="vote-row"><div class="vote-bars"><div class="vb-row"><span class="vb-lbl yes">YES</span><div class="vb-wrap"><div class="vb-fill yes" style="width:${yesPct}%"></div></div><span class="vb-pct">${yesPct}%</span></div><div class="vb-row"><span class="vb-lbl no">NO</span><div class="vb-wrap"><div class="vb-fill no" style="width:${100-yesPct}%"></div></div><span class="vb-pct">${100-yesPct}%</span></div></div><div class="attr-breakdown">${genderRows?`<div><small>性別別:</small> ${genderRows}</div>`:''}${ageRows?`<div><small>年代別:</small> ${ageRows}</div>`:''}</div></div>${actionBtns?`<div class="action-row">${actionBtns}</div>`:''}</div>`;
   }).join('');
   document.getElementById('topics-list').innerHTML = html || '<p class="empty">トピックなし</p>';
 }
 
-// ── アクション ─────────────────────────────────────────
+window.postTopic = async () => {
+  const question = document.getElementById('new-question').value.trim();
+  const category = document.getElementById('new-category').value;
+  const deadline = document.getElementById('new-deadline').value;
+  const judgeCondition = document.getElementById('new-judge').value.trim();
+  const isSponsored = document.getElementById('new-sponsored').checked;
+  const prize = isSponsored ? parseInt(document.getElementById('new-prize').value || '0') : 0;
+  if (!question) { alert('質問文を入力してください'); return; }
+  const btn = document.getElementById('post-btn');
+  btn.disabled = true; btn.textContent = '投稿中...';
+  try {
+    const adminUser = allUsers.find(u => u.id === ADMIN_UID);
+    const adminName = adminUser?.name || 'MC forum';
+    await addDoc(collection(db, 'topics'), {
+      question, category, deadline, judgeCondition,
+      questionEn: '', judgeConditionEn: '',
+      authorUid: ADMIN_UID, authorName: adminName,
+      authorInfluenceScore: adminUser?.influence_score || 0,
+      sponsored: isSponsored, prize,
+      yesCount: 0, noCount: 0, commentCount: 0,
+      resolved: false, actualResult: null,
+      createdAt: serverTimestamp(),
+    });
+    alert('✅ トピックを投稿しました');
+    document.getElementById('new-question').value = '';
+    document.getElementById('new-judge').value = '';
+    document.getElementById('new-sponsored').checked = false;
+    document.getElementById('new-prize').value = '';
+    document.getElementById('prize-row').style.display = 'none';
+    loadData();
+  } catch(e) { alert('エラー: ' + e.message); }
+  btn.disabled = false; btn.textContent = '投稿する';
+};
+
+window.togglePrizeRow = () => {
+  const checked = document.getElementById('new-sponsored').checked;
+  document.getElementById('prize-row').style.display = checked ? 'flex' : 'none';
+};
+
 window.resolveAdmin = async (topicId, result) => {
   if (!confirm(`「${result.toUpperCase()}が的中」として確定しますか？`)) return;
   try {
@@ -352,8 +241,7 @@ window.resolveAdmin = async (topicId, result) => {
       const influenceScore = totalA>0 ? (totalC/totalA)*(1+totalA*0.1)*100 : 0;
       await updateDoc(doc(db,'users',uid), {accuracy_by_category:acc, influence_score:influenceScore});
     }
-    alert('✅ 結果を確定しました');
-    loadData();
+    alert('✅ 結果を確定しました'); loadData();
   } catch(e) { alert('エラー: '+e.message); }
 };
 
@@ -365,52 +253,24 @@ window.togglePremium = async (uid, isPremium) => {
   } catch(e) { alert('エラー: '+e.message); }
 };
 
-// ── CSV出力 ────────────────────────────────────────────
 window.exportCSV = (type) => {
   let csv = '', filename = '';
   if (type === 'users') {
     csv = '名前,UID,年齢,性別,都道府県,職業,専門領域,予測数,影響力スコア\n';
-    allUsers.forEach(u => {
-      csv += `"${u.name||''}","${u.id}","${u.age||''}","${u.gender||''}","${u.prefecture||''}","${u.job||''}","${(u.expertise||[]).join('/')}",${u.totalVotes||0},${(u.influence_score||0).toFixed(2)}\n`;
-    });
+    allUsers.forEach(u => { csv += `"${u.name||''}","${u.id}","${u.age||''}","${u.gender||''}","${u.prefecture||''}","${u.job||''}","${(u.expertise||[]).join('/')}",${u.totalVotes||0},${(u.influence_score||0).toFixed(2)}\n`; });
     filename = 'mcforum_users.csv';
   } else if (type === 'predictions') {
     csv = 'トピックID,UID,カテゴリ,予測値,確信度,変更回数,作成日\n';
-    allPredictions.forEach(p => {
-      csv += `"${p.topicId||''}","${p.uid||''}","${p.category||''}","${p.prediction_value||''}",${p.confidence||0},${p.change_count||0},"${p.created_at?.toDate?.()?.toISOString?.()?.split('T')[0]||''}"\n`;
-    });
+    allPredictions.forEach(p => { csv += `"${p.topicId||''}","${p.uid||''}","${p.category||''}","${p.prediction_value||''}",${p.confidence||0},${p.change_count||0},"${p.created_at?.toDate?.()?.toISOString?.()?.split('T')[0]||''}"\n`; });
     filename = 'mcforum_predictions.csv';
   }
   const blob = new Blob(['\uFEFF'+csv], {type:'text/csv;charset=utf-8'});
   const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url; a.download = filename; a.click();
+  const a = document.createElement('a'); a.href = url; a.download = filename; a.click();
 };
 
-// ── タブ切替 ──────────────────────────────────────────
-// ── 予測変化グラフ ──────────────────────────────────────
-const SEGMENT_COLORS = {
-  'all': '#3b5bdb',
-  'expert': '#0ca678',
-  'top10': '#f59f00',
-  'male': '#7048e8',
-  'female': '#e64980',
-  'age20': '#1098ad',
-  'age30': '#e67700',
-  'age40': '#2f9e44',
-};
-
-const SEGMENT_LABELS = {
-  'all': '全体',
-  'expert': '得意分野と回答した人',
-  'top10': '予測上位ユーザー（Top10%）',
-  'male': '男性',
-  'female': '女性',
-  'age20': '20代',
-  'age30': '30代',
-  'age40': '40代',
-};
-
+const SEGMENT_COLORS = {'all':'#3b5bdb','expert':'#0ca678','top10':'#f59f00','male':'#7048e8','female':'#e64980','age20':'#1098ad','age30':'#e67700','age40':'#2f9e44'};
+const SEGMENT_LABELS = {'all':'全体','expert':'得意分野と回答した人','top10':'予測上位ユーザー（Top10%）','male':'男性','female':'女性','age20':'20代','age30':'30代','age40':'40代'};
 let activeSegments = new Set(['all']);
 
 function populateTopicSelect() {
@@ -426,93 +286,48 @@ function populateTopicSelect() {
 }
 
 function renderSegmentButtons(topic) {
-  const wrap = document.getElementById('graph-segments');
-  if (!wrap) return;
-
-  const segments = [
-    {key:'all', label:'👥 全体'},
-    {key:'expert', label:'🎯 得意分野と回答'},
-    {key:'top10', label:'🏆 上位予測者'},
-    {key:'male', label:'♂ 男性'},
-    {key:'female', label:'♀ 女性'},
-    {key:'age20', label:'20代'},
-    {key:'age30', label:'30代'},
-    {key:'age40', label:'40代'},
-  ];
-
-  wrap.innerHTML = segments.map(s => `
-    <button onclick="toggleSegment('${s.key}')" id="seg-${s.key}"
-      style="padding:5px 12px;border-radius:20px;font-size:11px;font-weight:700;cursor:pointer;
-             background:${activeSegments.has(s.key) ? SEGMENT_COLORS[s.key] : 'transparent'};
-             color:${activeSegments.has(s.key) ? '#fff' : SEGMENT_COLORS[s.key]};
-             border:1.5px solid ${SEGMENT_COLORS[s.key]};transition:.2s">
-      ${s.label}
-    </button>
-  `).join('');
+  const wrap = document.getElementById('graph-segments'); if (!wrap) return;
+  const segments = [{key:'all',label:'👥 全体'},{key:'expert',label:'🎯 得意分野と回答'},{key:'top10',label:'🏆 上位予測者'},{key:'male',label:'♂ 男性'},{key:'female',label:'♀ 女性'},{key:'age20',label:'20代'},{key:'age30',label:'30代'},{key:'age40',label:'40代'}];
+  wrap.innerHTML = segments.map(s => `<button onclick="toggleSegment('${s.key}')" style="padding:5px 12px;border-radius:20px;font-size:11px;font-weight:700;cursor:pointer;background:${activeSegments.has(s.key)?SEGMENT_COLORS[s.key]:'transparent'};color:${activeSegments.has(s.key)?'#fff':SEGMENT_COLORS[s.key]};border:1.5px solid ${SEGMENT_COLORS[s.key]};transition:.2s">${s.label}</button>`).join('');
 }
 
 window.toggleSegment = function(key) {
-  if (key === 'all') {
-    activeSegments = new Set(['all']);
-  } else {
-    activeSegments.delete('all');
-    if (activeSegments.has(key)) {
-      activeSegments.delete(key);
-      if (activeSegments.size === 0) activeSegments.add('all');
-    } else {
-      activeSegments.add(key);
-    }
-  }
+  if (key === 'all') { activeSegments = new Set(['all']); }
+  else { activeSegments.delete('all'); if (activeSegments.has(key)) { activeSegments.delete(key); if (activeSegments.size===0) activeSegments.add('all'); } else { activeSegments.add(key); } }
   renderPredictionGraph();
 };
 
 function filterUsersBySegment(segment, topicCategory) {
   const topInfluence = [...allUsers].sort((a,b)=>(b.influence_score||0)-(a.influence_score||0));
-  const top10Count = Math.max(1, Math.ceil(topInfluence.length * 0.1));
-  const topUids = new Set(topInfluence.slice(0, top10Count).map(u => u.id));
-
+  const top10Count = Math.max(1, Math.ceil(topInfluence.length*0.1));
+  const topUids = new Set(topInfluence.slice(0,top10Count).map(u=>u.id));
   switch(segment) {
-    case 'all': return null; // nullは全員
-    case 'expert': return new Set(allUsers.filter(u =>
-      (u.expertise||[]).includes(topicCategory)).map(u => u.id));
+    case 'all': return null;
+    case 'expert': return new Set(allUsers.filter(u=>(u.expertise||[]).includes(topicCategory)).map(u=>u.id));
     case 'top10': return topUids;
-    case 'male': return new Set(allUsers.filter(u => u.gender === '男性').map(u => u.id));
-    case 'female': return new Set(allUsers.filter(u => u.gender === '女性').map(u => u.id));
-    case 'age20': return new Set(allUsers.filter(u => u.age === '20代').map(u => u.id));
-    case 'age30': return new Set(allUsers.filter(u => u.age === '30代').map(u => u.id));
-    case 'age40': return new Set(allUsers.filter(u => u.age === '40代').map(u => u.id));
+    case 'male': return new Set(allUsers.filter(u=>u.gender==='男性').map(u=>u.id));
+    case 'female': return new Set(allUsers.filter(u=>u.gender==='女性').map(u=>u.id));
+    case 'age20': return new Set(allUsers.filter(u=>u.age==='20代').map(u=>u.id));
+    case 'age30': return new Set(allUsers.filter(u=>u.age==='30代').map(u=>u.id));
+    case 'age40': return new Set(allUsers.filter(u=>u.age==='40代').map(u=>u.id));
     default: return null;
   }
 }
 
 function buildTimeline(preds, allowedUids, unit) {
-  const dateKey = (d) => unit === 'day' ? d.toISOString().slice(0,10) : d.toISOString().slice(0,7);
+  const dateKey = (d) => unit==='day' ? d.toISOString().slice(0,10) : d.toISOString().slice(0,7);
   const events = [];
-
   preds.forEach(p => {
     if (allowedUids && !allowedUids.has(p.uid)) return;
-    const createdAt = p.created_at?.toDate ? p.created_at.toDate()
-      : new Date((p.created_at?.seconds||0) * 1000);
-    const history = p.history || [];
-    const initialValue = history.length > 0
-      ? (history[0].value === 'yes' ? 'no' : 'yes') : p.prediction_value;
-    events.push({ date: createdAt, uid: p.uid, value: initialValue });
-    history.forEach(h => {
-      const changedAt = h.changed_at?.toDate ? h.changed_at.toDate()
-        : new Date((h.changed_at?.seconds||0) * 1000);
-      events.push({ date: changedAt, uid: p.uid, value: h.value });
-    });
+    const createdAt = p.created_at?.toDate ? p.created_at.toDate() : new Date((p.created_at?.seconds||0)*1000);
+    const history = p.history||[];
+    const initialValue = history.length>0 ? (history[0].value==='yes'?'no':'yes') : p.prediction_value;
+    events.push({date:createdAt,uid:p.uid,value:initialValue});
+    history.forEach(h => { const changedAt=h.changed_at?.toDate?h.changed_at.toDate():new Date((h.changed_at?.seconds||0)*1000); events.push({date:changedAt,uid:p.uid,value:h.value}); });
   });
-
-  events.sort((a, b) => a.date - b.date);
-  const buckets = {}, userValues = {};
-  events.forEach(e => {
-    userValues[e.uid] = e.value;
-    const key = dateKey(e.date);
-    let yes = 0, no = 0;
-    Object.values(userValues).forEach(v => { if(v==='yes') yes++; else no++; });
-    buckets[key] = { yes, no, total: yes+no };
-  });
+  events.sort((a,b)=>a.date-b.date);
+  const buckets={},userValues={};
+  events.forEach(e => { userValues[e.uid]=e.value; const key=dateKey(e.date); let yes=0,no=0; Object.values(userValues).forEach(v=>{if(v==='yes')yes++;else no++;}); buckets[key]={yes,no,total:yes+no}; });
   return buckets;
 }
 
@@ -521,115 +336,31 @@ window.renderPredictionGraph = function() {
   const unit = document.getElementById('graph-unit').value;
   const wrap = document.getElementById('prediction-graph-wrap');
   const legendWrap = document.getElementById('graph-legend');
-
-  if (!topicId) {
-    wrap.innerHTML = '<p class="empty">トピックを選択してください</p>';
-    document.getElementById('graph-segments').innerHTML = '';
-    legendWrap.innerHTML = '';
-    return;
-  }
-
-  const topic = allTopics.find(t => t.id === topicId);
-  const topicPreds = allPredictions.filter(p => p.topicId === topicId);
-
+  if (!topicId) { wrap.innerHTML='<p class="empty">トピックを選択してください</p>'; document.getElementById('graph-segments').innerHTML=''; legendWrap.innerHTML=''; return; }
+  const topic = allTopics.find(t=>t.id===topicId);
+  const topicPreds = allPredictions.filter(p=>p.topicId===topicId);
   renderSegmentButtons(topic);
-
-  if (topicPreds.length === 0) {
-    wrap.innerHTML = '<p class="empty">このトピックの予測データがありません</p>';
-    return;
-  }
-
-  // 各セグメントのタイムラインを構築
-  const segmentData = {};
-  activeSegments.forEach(seg => {
-    const allowedUids = filterUsersBySegment(seg, topic.category);
-    const buckets = buildTimeline(topicPreds, allowedUids, unit);
-    if (Object.keys(buckets).length > 0) segmentData[seg] = buckets;
+  if (topicPreds.length===0) { wrap.innerHTML='<p class="empty">このトピックの予測データがありません</p>'; return; }
+  const segmentData={};
+  activeSegments.forEach(seg=>{ const allowedUids=filterUsersBySegment(seg,topic.category); const buckets=buildTimeline(topicPreds,allowedUids,unit); if(Object.keys(buckets).length>0) segmentData[seg]=buckets; });
+  const allKeys=[...new Set(Object.values(segmentData).flatMap(b=>Object.keys(b)))].sort();
+  if (allKeys.length===0) { wrap.innerHTML='<p class="empty">選択したセグメントのデータがありません</p>'; return; }
+  const W=700,H=240,PL=50,PR=20,PT=20,PB=40,gW=W-PL-PR,gH=H-PT-PB,midY=PT+gH*0.5;
+  const yLabels=[0,25,50,75,100].map(v=>{const y=PT+(1-v/100)*gH;return `<line x1="${PL}" y1="${y}" x2="${W-PR}" y2="${y}" stroke="#e3e7ee" stroke-width="1"/><text x="${PL-8}" y="${y+4}" text-anchor="end" fill="#5a6172" font-size="10">${v}%</text>`;}).join('');
+  const step=Math.max(1,Math.floor(allKeys.length/6));
+  const xLabels=allKeys.filter((_,i)=>i%step===0).map(k=>{const x=PL+(allKeys.indexOf(k)/Math.max(allKeys.length-1,1))*gW;const label=unit==='day'?k.slice(5):k;return `<text x="${x}" y="${H-8}" text-anchor="middle" fill="#5a6172" font-size="9">${label}</text>`;}).join('');
+  let svgPaths='',svgNodes='';const legendItems=[];
+  Object.entries(segmentData).forEach(([seg,buckets])=>{
+    const color=SEGMENT_COLORS[seg];
+    const points=allKeys.map((k,i)=>{const d=buckets[k];const yesPct=d?(d.total>0?d.yes/d.total:null):null;if(yesPct===null)return null;const x=PL+(i/Math.max(allKeys.length-1,1))*gW;const y=PT+(1-yesPct)*gH;return{x,y,key:k,yesPct,...d};}).filter(Boolean);
+    if(points.length===0)return;
+    const linePath=points.map((p,i)=>`${i===0?'M':'L'}${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(' ');
+    svgPaths+=`<path d="${linePath}" fill="none" stroke="${color}" stroke-width="2.5" stroke-linejoin="round" opacity="0.9"/>`;
+    points.forEach(p=>{const yp=(p.yesPct*100).toFixed(0);svgNodes+=`<circle cx="${p.x.toFixed(1)}" cy="${p.y.toFixed(1)}" r="4" fill="${color}" stroke="white" stroke-width="1.5"><title>[${SEGMENT_LABELS[seg]}] ${p.key}\nYES: ${yp}% / NO: ${100-parseInt(yp)}%\n予測者数: ${p.total}</title></circle>`;});
+    const latest=points[points.length-1];legendItems.push({seg,color,yesPct:(latest.yesPct*100).toFixed(0),total:latest.total});
   });
-
-  // 全キーをマージ
-  const allKeys = [...new Set(Object.values(segmentData).flatMap(b => Object.keys(b)))].sort();
-
-  if (allKeys.length === 0) {
-    wrap.innerHTML = '<p class="empty">選択したセグメントのデータがありません</p>';
-    return;
-  }
-
-  // SVG描画
-  const W = 700, H = 240, PL = 50, PR = 20, PT = 20, PB = 40;
-  const gW = W - PL - PR, gH = H - PT - PB;
-  const midY = PT + gH * 0.5;
-
-  const yLabels = [0, 25, 50, 75, 100].map(v => {
-    const y = PT + (1 - v/100) * gH;
-    return `<line x1="${PL}" y1="${y}" x2="${W-PR}" y2="${y}" stroke="#1e2340" stroke-width="1"/>
-            <text x="${PL-8}" y="${y+4}" text-anchor="end" fill="#3a4060" font-size="10">${v}%</text>`;
-  }).join('');
-
-  const step = Math.max(1, Math.floor(allKeys.length / 6));
-  const xLabels = allKeys.filter((_,i) => i%step===0).map((k, i) => {
-    const x = PL + (allKeys.indexOf(k) / Math.max(allKeys.length-1, 1)) * gW;
-    const label = unit==='day' ? k.slice(5) : k;
-    return `<text x="${x}" y="${H-8}" text-anchor="middle" fill="#3a4060" font-size="9">${label}</text>`;
-  }).join('');
-
-  let svgPaths = '', svgNodes = '';
-  const legendItems = [];
-
-  Object.entries(segmentData).forEach(([seg, buckets]) => {
-    const color = SEGMENT_COLORS[seg];
-    const points = allKeys.map((k, i) => {
-      const d = buckets[k];
-      const yesPct = d ? (d.total > 0 ? d.yes/d.total : null) : null;
-      if (yesPct === null) return null;
-      const x = PL + (i / Math.max(allKeys.length-1, 1)) * gW;
-      const y = PT + (1 - yesPct) * gH;
-      return { x, y, key: k, yesPct, ...d };
-    }).filter(Boolean);
-
-    if (points.length === 0) return;
-
-    const linePath = points.map((p,i) => `${i===0?'M':'L'}${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(' ');
-    svgPaths += `<path d="${linePath}" fill="none" stroke="${color}" stroke-width="2.5" stroke-linejoin="round" opacity="0.9"/>`;
-
-    points.forEach(p => {
-      const yesPct = (p.yesPct*100).toFixed(0);
-      svgNodes += `<circle cx="${p.x.toFixed(1)}" cy="${p.y.toFixed(1)}" r="4" fill="${color}" stroke="var(--card)" stroke-width="1.5">
-        <title>[${SEGMENT_LABELS[seg]}] ${p.key}\nYES: ${yesPct}% / NO: ${100-parseInt(yesPct)}%\n予測者数: ${p.total}</title>
-      </circle>`;
-    });
-
-    const latest = points[points.length-1];
-    legendItems.push({ seg, color, yesPct: (latest.yesPct*100).toFixed(0), total: latest.total });
-  });
-
-  const svgContent = `
-  <svg viewBox="0 0 ${W} ${H}" style="width:100%;max-width:${W}px;display:block">
-    ${yLabels}
-    <line x1="${PL}" y1="${midY}" x2="${W-PR}" y2="${midY}" stroke="#3b5bdb" stroke-width="1" stroke-dasharray="4,3" opacity="0.3"/>
-    ${svgPaths}
-    ${svgNodes}
-    <line x1="${PL}" y1="${PT+gH}" x2="${W-PR}" y2="${PT+gH}" stroke="#1e2340" stroke-width="1"/>
-    ${xLabels}
-    <line x1="${PL}" y1="${PT}" x2="${PL}" y2="${PT+gH}" stroke="#1e2340" stroke-width="1"/>
-    <text x="${PL-40}" y="${PT+gH/2}" text-anchor="middle" fill="#3a4060" font-size="9" transform="rotate(-90,${PL-40},${PT+gH/2})">YES率</text>
-  </svg>`;
-
-  wrap.innerHTML = `
-  <div style="margin-bottom:10px">
-    <span style="font-size:12px;color:var(--soft)">${topic.question}</span>
-  </div>
-  <div style="overflow-x:auto">${svgContent}</div>
-  <div style="margin-top:6px;font-size:10px;color:var(--faint)">※ 各ノードにカーソルで詳細表示</div>`;
-
-  legendWrap.innerHTML = legendItems.map(l => `
-    <div style="display:flex;align-items:center;gap:6px">
-      <div style="width:12px;height:12px;border-radius:50%;background:${l.color}"></div>
-      <span style="font-size:11px;color:var(--soft)">${SEGMENT_LABELS[l.seg]}</span>
-      <span style="font-size:12px;font-weight:800;color:${l.color}">YES ${l.yesPct}%</span>
-      <span style="font-size:10px;color:var(--faint)">(${l.total}人)</span>
-    </div>
-  `).join('');
+  wrap.innerHTML=`<div style="margin-bottom:10px"><span style="font-size:12px;color:#5a6172">${topic.question}</span></div><div style="overflow-x:auto"><svg viewBox="0 0 ${W} ${H}" style="width:100%;max-width:${W}px;display:block">${yLabels}<line x1="${PL}" y1="${midY}" x2="${W-PR}" y2="${midY}" stroke="#3b5bdb" stroke-width="1" stroke-dasharray="4,3" opacity="0.3"/>${svgPaths}${svgNodes}<line x1="${PL}" y1="${PT+gH}" x2="${W-PR}" y2="${PT+gH}" stroke="#e3e7ee" stroke-width="1"/>${xLabels}<line x1="${PL}" y1="${PT}" x2="${PL}" y2="${PT+gH}" stroke="#e3e7ee" stroke-width="1"/><text x="${PL-40}" y="${PT+gH/2}" text-anchor="middle" fill="#5a6172" font-size="9" transform="rotate(-90,${PL-40},${PT+gH/2})">YES率</text></svg></div><div style="margin-top:6px;font-size:10px;color:#9097a8">※ 各ノードにカーソルで詳細表示</div>`;
+  legendWrap.innerHTML=legendItems.map(l=>`<div style="display:flex;align-items:center;gap:6px"><div style="width:12px;height:12px;border-radius:50%;background:${l.color}"></div><span style="font-size:11px;color:#5a6172">${SEGMENT_LABELS[l.seg]}</span><span style="font-size:12px;font-weight:800;color:${l.color}">YES ${l.yesPct}%</span><span style="font-size:10px;color:#9097a8">(${l.total}人)</span></div>`).join('');
 };
 
 window.switchTab = (tab) => {
@@ -639,10 +370,7 @@ window.switchTab = (tab) => {
   document.getElementById(`tab-${tab}`).classList.add('active');
 };
 
-function showError(msg) {
-  document.getElementById('error').textContent = 'エラー: '+msg;
-  document.getElementById('error').style.display = 'block';
-}
+function showError(msg) { document.getElementById('error').textContent='エラー: '+msg; document.getElementById('error').style.display='block'; }
 
 onAuthStateChanged(auth, user => {
   if (user && user.uid === ADMIN_UID) {
@@ -656,97 +384,74 @@ onAuthStateChanged(auth, user => {
 </script>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
-:root{
-  --bg:#f7f8fa;--card:#ffffff;--card2:#f1f3f7;--border:#e3e7ee;
-  --text:#1a1d29;--soft:#5a6172;--faint:#9097a8;
-  --blue:#3b5bdb;--green:#0ca678;--red:#e8590c;--gold:#f59f00;--pur:#7048e8;
-}
+:root{--bg:#f7f8fa;--card:#ffffff;--card2:#f1f3f7;--border:#e3e7ee;--text:#1a1d29;--soft:#5a6172;--faint:#9097a8;--blue:#3b5bdb;--green:#0ca678;--red:#e8590c;--gold:#f59f00;--pur:#7048e8}
 body{background:var(--bg);color:var(--text);font-family:'Noto Sans JP','Space Grotesk',sans-serif;min-height:100vh}
-
-.header{background:var(--card);border-bottom:1px solid var(--border);padding:14px 24px;display:flex;align-items:center;gap:12px;position:sticky;top:0;z-index:100}
+.header{background:var(--card);border-bottom:1px solid var(--border);padding:14px 24px;display:flex;align-items:center;gap:12px;position:sticky;top:0;z-index:100;box-shadow:0 1px 4px rgba(0,0,0,.06)}
 .logo{width:30px;height:30px;border-radius:8px;background:linear-gradient(135deg,var(--blue),#5c7cfa);display:flex;align-items:center;justify-content:center}
 .header-title{font-size:15px;font-weight:800}
 .header-sub{font-size:11px;color:var(--soft);margin-left:auto}
 .refresh-btn,.export-btn{padding:6px 14px;border:none;border-radius:7px;font-size:11px;font-weight:700;cursor:pointer}
 .refresh-btn{background:var(--blue);color:#fff}
-.export-btn{background:rgba(12,166,120,.15);color:var(--green);border:1px solid var(--green);margin-left:6px}
-
+.export-btn{background:rgba(12,166,120,.1);color:var(--green);border:1px solid rgba(12,166,120,.3);margin-left:6px}
 .tabs{display:flex;gap:2px;padding:0 24px;background:var(--card);border-bottom:1px solid var(--border);overflow-x:auto}
 .tab-btn{padding:12px 18px;border:none;background:transparent;color:var(--soft);font-size:12px;font-weight:700;cursor:pointer;border-bottom:2px solid transparent;white-space:nowrap;transition:.2s}
 .tab-btn.active{color:var(--blue);border-bottom-color:var(--blue)}
-
+.tab-btn:hover{color:var(--blue)}
 .wrap{max-width:1280px;margin:0 auto;padding:20px}
 .tab-content{display:none}.tab-content.active{display:block}
-
-/* STATS */
 .stats-grid{display:grid;grid-template-columns:repeat(6,1fr);gap:10px;margin-bottom:20px}
-.stat-card{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:14px;text-align:center}
-.stat-card .val{font-size:24px;font-weight:800;color:var(--blue);font-family:'Space Grotesk'}
+.stat-card{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:14px;text-align:center;box-shadow:0 1px 3px rgba(0,0,0,.04)}
+.stat-card .val{font-size:24px;font-weight:800;color:var(--blue)}
 .stat-card .lbl{font-size:10px;color:var(--soft);margin-top:3px}
-
-/* GRID */
 .grid-2{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:20px}
-.grid-4{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:20px}
-.panel{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:16px}
+.panel{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:16px;box-shadow:0 1px 3px rgba(0,0,0,.04)}
 .panel-title{font-size:11px;font-weight:800;color:var(--soft);letter-spacing:.8px;text-transform:uppercase;margin-bottom:12px;display:flex;align-items:center;justify-content:space-between}
-
-/* DEMO BARS */
 .demo-row{display:flex;align-items:center;gap:8px;margin-bottom:8px}
 .demo-lbl{font-size:11px;min-width:80px;color:var(--text)}
 .demo-bar-wrap{flex:1;height:7px;background:var(--border);border-radius:4px;overflow:hidden}
-.demo-bar{height:100%;background:linear-gradient(90deg,var(--blue),var(--pur));border-radius:4px;transition:width .6s}
+.demo-bar{height:100%;background:linear-gradient(90deg,var(--blue),var(--pur));border-radius:4px}
 .demo-val{font-size:10px;color:var(--soft);min-width:80px;text-align:right}
-
-/* CAT INSIGHTS */
 .cat-insight-card{background:var(--card2);border:1px solid var(--border);border-radius:10px;padding:14px;margin-bottom:10px}
 .cat-insight-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}
 .cat-name{font-size:13px;font-weight:800}
-.cat-accuracy{font-size:22px;font-weight:800;font-family:'Space Grotesk'}
+.cat-accuracy{font-size:22px;font-weight:800}
 .cat-stats{display:flex;gap:16px;margin-bottom:8px}
 .cat-stat{text-align:center}
 .cs-val{display:block;font-size:16px;font-weight:800;color:var(--blue)}
 .cs-lbl{display:block;font-size:9px;color:var(--soft)}
 .attr-tags{display:flex;flex-wrap:wrap;gap:5px;margin-top:6px}
 .attr-label{font-size:9px;color:var(--soft)}
-.attr-tag{font-size:9px;padding:2px 7px;background:rgba(59,91,219,.15);color:#8ab4f8;border-radius:4px;font-weight:600}
-
-/* TOP PREDICTORS TABLE */
+.attr-tag{font-size:9px;padding:2px 7px;background:rgba(59,91,219,.1);color:var(--blue);border-radius:4px;font-weight:600}
 .data-table{width:100%;border-collapse:collapse}
 .data-table th{font-size:10px;font-weight:700;color:var(--soft);padding:8px 10px;border-bottom:2px solid var(--border);text-align:left;white-space:nowrap}
 .data-table td{font-size:12px;padding:10px;border-bottom:1px solid var(--border);vertical-align:middle}
-.data-table tr:hover td{background:rgba(59,91,219,.05)}
-.score-badge{background:rgba(59,91,219,.2);color:#8ab4f8;padding:2px 8px;border-radius:6px;font-weight:800;font-size:12px}
+.data-table tr:hover td{background:rgba(59,91,219,.03)}
+.score-badge{background:rgba(59,91,219,.1);color:var(--blue);padding:2px 8px;border-radius:6px;font-weight:800;font-size:12px}
 .demo-text{color:var(--soft)}
-
-/* VELOCITY */
 .v-stat{font-size:12px;color:var(--soft);margin-bottom:4px}
 .v-stat strong{color:var(--text)}
-
-/* USERS */
-.user-row{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:14px;margin-bottom:10px}
+.user-row{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:14px;margin-bottom:10px;box-shadow:0 1px 3px rgba(0,0,0,.04)}
 .user-row-header{display:flex;align-items:center;gap:12px}
 .avatar{width:36px;height:36px;border-radius:50%;display:flex;align-items:center;justify-content:center;color:#fff;font-weight:800;font-size:15px;flex-shrink:0}
 .user-row-info{flex:1}
 .user-row-name{display:block;font-size:13px;font-weight:800}
-.user-row-id{display:block;font-size:9px;color:var(--faint);font-family:'Space Grotesk'}
+.user-row-id{display:block;font-size:9px;color:var(--faint)}
 .user-row-stats{display:flex;gap:12px;align-items:center}
 .influence-score{font-size:16px;font-weight:800;color:var(--gold)}
 .total-votes,.points{font-size:11px;color:var(--soft)}
 .demo-tags,.expertise-tags,.acc-tags{display:flex;flex-wrap:wrap;gap:5px;margin-top:8px}
-.demo-chip{font-size:10px;padding:2px 8px;background:rgba(112,72,232,.15);color:#b197fc;border-radius:4px}
-.exp-tag{font-size:10px;padding:2px 8px;background:rgba(59,91,219,.15);color:#8ab4f8;border-radius:4px}
+.demo-chip{font-size:10px;padding:2px 8px;background:rgba(112,72,232,.1);color:var(--pur);border-radius:4px}
+.exp-tag{font-size:10px;padding:2px 8px;background:rgba(59,91,219,.1);color:var(--blue);border-radius:4px}
 .acc-tag{font-size:10px;padding:2px 8px;background:var(--card2);border-radius:4px;border:1px solid var(--border)}
 .premium-btn{padding:5px 12px;border-radius:7px;font-size:10px;font-weight:700;cursor:pointer;background:rgba(245,159,0,.1);color:var(--gold);border:1px solid rgba(245,159,0,.3)}
 .premium-btn.active{background:linear-gradient(135deg,#f59f00,#e67700);color:#fff;border:none}
-
-/* TOPICS */
-.topic-card{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:16px;margin-bottom:10px}
-.topic-card.resolved{border-color:rgba(12,166,120,.3)}
+.topic-card{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:16px;margin-bottom:10px;box-shadow:0 1px 3px rgba(0,0,0,.04)}
+.topic-card.resolved{border-color:rgba(12,166,120,.3);background:rgba(12,166,120,.02)}
 .topic-header{display:flex;gap:8px;align-items:center;margin-bottom:8px;flex-wrap:wrap}
 .topic-cat{font-size:10px;font-weight:700;color:var(--soft)}
-.badge-resolved{font-size:9px;padding:2px 8px;background:rgba(12,166,120,.2);color:var(--green);border-radius:4px;font-weight:700}
-.badge-pending{font-size:9px;padding:2px 8px;background:rgba(245,159,0,.2);color:var(--gold);border-radius:4px;font-weight:700}
-.badge-sponsored{font-size:9px;padding:2px 8px;background:rgba(245,159,0,.15);color:var(--gold);border-radius:4px;font-weight:700}
+.badge-resolved{font-size:9px;padding:2px 8px;background:rgba(12,166,120,.1);color:var(--green);border-radius:4px;font-weight:700}
+.badge-pending{font-size:9px;padding:2px 8px;background:rgba(245,159,0,.1);color:var(--gold);border-radius:4px;font-weight:700}
+.badge-sponsored{font-size:9px;padding:2px 8px;background:rgba(245,159,0,.1);color:var(--gold);border-radius:4px;font-weight:700}
 .topic-q{font-size:14px;font-weight:700;margin-bottom:6px;line-height:1.5}
 .judge-condition{font-size:10px;color:var(--soft);margin-bottom:8px;padding:5px 10px;background:var(--card2);border-radius:6px}
 .topic-meta{display:flex;gap:12px;font-size:11px;color:var(--soft);margin-bottom:10px;flex-wrap:wrap}
@@ -761,55 +466,59 @@ body{background:var(--bg);color:var(--text);font-family:'Noto Sans JP','Space Gr
 .vb-pct{font-size:10px;font-weight:700;min-width:30px;text-align:right}
 .attr-breakdown{flex:1;min-width:200px;font-size:10px;color:var(--soft);display:flex;flex-direction:column;gap:5px}
 .action-row{display:flex;gap:8px;margin-top:12px}
-.btn-yes{padding:7px 18px;background:rgba(12,166,120,.15);color:var(--green);border:1px solid var(--green);border-radius:7px;font-size:12px;font-weight:700;cursor:pointer}
+.btn-yes{padding:7px 18px;background:rgba(12,166,120,.1);color:var(--green);border:1px solid var(--green);border-radius:7px;font-size:12px;font-weight:700;cursor:pointer;transition:.2s}
 .btn-yes:hover{background:var(--green);color:#fff}
-.btn-no{padding:7px 18px;background:rgba(232,89,12,.15);color:var(--red);border:1px solid var(--red);border-radius:7px;font-size:12px;font-weight:700;cursor:pointer}
+.btn-no{padding:7px 18px;background:rgba(232,89,12,.1);color:var(--red);border:1px solid var(--red);border-radius:7px;font-size:12px;font-weight:700;cursor:pointer;transition:.2s}
 .btn-no:hover{background:var(--red);color:#fff}
-
-#loading{position:fixed;inset:0;background:rgba(10,12,20,.9);display:flex;align-items:center;justify-content:center;z-index:999;flex-direction:column;gap:12px}
+.post-form{background:var(--card);border:2px solid var(--blue);border-radius:14px;padding:20px;margin-bottom:24px;box-shadow:0 2px 8px rgba(59,91,219,.1)}
+.post-form-title{font-size:14px;font-weight:800;color:var(--blue);margin-bottom:16px}
+.form-row{display:flex;flex-direction:column;gap:6px;margin-bottom:14px}
+.form-row label{font-size:11px;font-weight:700;color:var(--soft)}
+.form-row input,.form-row select,.form-row textarea{padding:10px 12px;border:1.5px solid var(--border);border-radius:8px;font-size:13px;font-family:inherit;background:var(--bg);color:var(--text);transition:.2s;outline:none}
+.form-row input:focus,.form-row select:focus,.form-row textarea:focus{border-color:var(--blue);background:#fff}
+.form-row textarea{resize:vertical;min-height:72px}
+.form-row-inline{display:flex;gap:12px;align-items:center;margin-bottom:14px}
+.form-row-inline label{font-size:12px;font-weight:700;color:var(--soft);display:flex;align-items:center;gap:6px;cursor:pointer}
+.prize-row{display:none;align-items:center;gap:8px;margin-bottom:14px}
+.prize-row label{font-size:11px;font-weight:700;color:var(--soft)}
+.prize-row input{padding:8px 12px;border:1.5px solid var(--border);border-radius:8px;font-size:13px;width:120px;background:var(--bg)}
+.post-btn{padding:12px 28px;background:var(--blue);color:#fff;border:none;border-radius:8px;font-size:13px;font-weight:800;cursor:pointer;transition:.2s;width:100%}
+.post-btn:hover{background:#2f4ec9}
+.post-btn:disabled{background:var(--faint);cursor:not-allowed}
+#loading{position:fixed;inset:0;background:rgba(247,248,250,.9);display:flex;align-items:center;justify-content:center;z-index:999;flex-direction:column;gap:12px}
 .spinner{width:36px;height:36px;border:3px solid var(--border);border-top-color:var(--blue);border-radius:50%;animation:spin .8s linear infinite}
 @keyframes spin{to{transform:rotate(360deg)}}
-#error{background:rgba(232,89,12,.15);border:1px solid var(--red);color:var(--red);padding:10px 16px;border-radius:8px;margin:12px 24px;font-size:12px;display:none}
+#error{background:rgba(232,89,12,.1);border:1px solid var(--red);color:var(--red);padding:10px 16px;border-radius:8px;margin:12px 24px;font-size:12px;display:none}
 .empty{color:var(--faint);font-size:12px;text-align:center;padding:20px}
 #auth-gate{display:flex;align-items:center;justify-content:center;min-height:100vh;flex-direction:column;gap:12px}
 #auth-gate p{color:var(--soft);font-size:13px}
-
-@media(max-width:900px){
-  .stats-grid{grid-template-columns:repeat(3,1fr)}
-  .grid-2,.grid-4{grid-template-columns:1fr}
-}
+@media(max-width:900px){.stats-grid{grid-template-columns:repeat(3,1fr)}.grid-2{grid-template-columns:1fr}}
 </style>
 </head>
 <body>
-<div id="loading"><div class="spinner"></div><p style="color:#7a85a8;font-size:12px">データを読み込み中...</p></div>
+<div id="loading"><div class="spinner"></div><p style="color:#5a6172;font-size:12px">データを読み込み中...</p></div>
 <div id="error"></div>
 <div id="auth-gate">
   <p>管理者アカウントでログインしてください</p>
-  <p style="font-size:11px;color:#3a4060">mcforum.vercel.appでログイン後、このページを開いてください</p>
+  <p style="font-size:11px;color:#9097a8">mcforum.vercel.appでログイン後、このページを開いてください</p>
 </div>
-
 <div id="dashboard" style="display:none">
 <div class="header">
-  <div class="logo">
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 18 4 8 8 13 12 6 16 13 20 8 20 18"/></svg>
-  </div>
+  <div class="logo"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 18 4 8 8 13 12 6 16 13 20 8 20 18"/></svg></div>
   <div class="header-title">MC forum <span style="color:#3b5bdb">B2B</span> Data Dashboard</div>
   <div class="header-sub">集合知データ販売管理システム</div>
   <button class="export-btn" onclick="exportCSV('users')">📥 ユーザーCSV</button>
   <button class="export-btn" onclick="exportCSV('predictions')">📥 予測CSV</button>
   <button class="refresh-btn" onclick="loadData()">🔄 更新</button>
 </div>
-
 <div class="tabs">
   <button class="tab-btn active" data-tab="overview" onclick="switchTab('overview')">📊 概要</button>
   <button class="tab-btn" data-tab="b2b" onclick="switchTab('b2b')">💼 B2Bデータ分析</button>
   <button class="tab-btn" data-tab="users" onclick="switchTab('users')">👥 予測者管理</button>
   <button class="tab-btn" data-tab="topics" onclick="switchTab('topics')">🎯 トピック管理</button>
 </div>
-
 <div class="wrap">
 
-<!-- 概要 -->
 <div id="tab-overview" class="tab-content active">
   <div class="stats-grid">
     <div class="stat-card"><div class="val" id="stat-users">-</div><div class="lbl">総ユーザー数</div></div>
@@ -821,27 +530,14 @@ body{background:var(--bg);color:var(--text);font-family:'Noto Sans JP','Space Gr
   </div>
 </div>
 
-<!-- B2Bデータ分析 -->
 <div id="tab-b2b" class="tab-content">
   <div class="grid-2">
     <div class="panel">
       <div class="panel-title">👤 デモグラフィクス分析</div>
-      <div style="margin-bottom:16px">
-        <div style="font-size:11px;font-weight:700;color:var(--soft);margin-bottom:8px">年齢分布</div>
-        <div id="age-chart"></div>
-      </div>
-      <div style="margin-bottom:16px">
-        <div style="font-size:11px;font-weight:700;color:var(--soft);margin-bottom:8px">性別分布</div>
-        <div id="gender-chart"></div>
-      </div>
-      <div style="margin-bottom:16px">
-        <div style="font-size:11px;font-weight:700;color:var(--soft);margin-bottom:8px">都道府県分布</div>
-        <div id="pref-chart"></div>
-      </div>
-      <div>
-        <div style="font-size:11px;font-weight:700;color:var(--soft);margin-bottom:8px">職業分布</div>
-        <div id="job-chart"></div>
-      </div>
+      <div style="margin-bottom:16px"><div style="font-size:11px;font-weight:700;color:var(--soft);margin-bottom:8px">年齢分布</div><div id="age-chart"></div></div>
+      <div style="margin-bottom:16px"><div style="font-size:11px;font-weight:700;color:var(--soft);margin-bottom:8px">性別分布</div><div id="gender-chart"></div></div>
+      <div style="margin-bottom:16px"><div style="font-size:11px;font-weight:700;color:var(--soft);margin-bottom:8px">都道府県分布</div><div id="pref-chart"></div></div>
+      <div><div style="font-size:11px;font-weight:700;color:var(--soft);margin-bottom:8px">職業分布</div><div id="job-chart"></div></div>
     </div>
     <div>
       <div class="panel" style="margin-bottom:16px">
@@ -859,48 +555,71 @@ body{background:var(--bg);color:var(--text);font-family:'Noto Sans JP','Space Gr
     <div class="panel-title">🏆 Top予測者（B2B販売候補データ）</div>
     <div style="overflow-x:auto">
       <table class="data-table">
-        <thead>
-          <tr>
-            <th>順位</th><th>名前</th><th>影響力</th><th>的中率</th>
-            <th>予測数</th><th>専門領域</th><th>属性</th>
-          </tr>
-        </thead>
+        <thead><tr><th>順位</th><th>名前</th><th>影響力</th><th>的中率</th><th>予測数</th><th>専門領域</th><th>属性</th></tr></thead>
         <tbody id="top-predictors"></tbody>
       </table>
     </div>
   </div>
-
-  <!-- 予測変化グラフ -->
   <div class="panel">
     <div class="panel-title">
       📈 予測変化グラフ（集合知の変遷）
       <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-        <select id="graph-topic" onchange="renderPredictionGraph()" style="background:var(--card2);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:4px 8px;font-size:11px">
-          <option value="">トピックを選択</option>
-        </select>
-        <select id="graph-unit" onchange="renderPredictionGraph()" style="background:var(--card2);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:4px 8px;font-size:11px">
-          <option value="day">日別</option>
-          <option value="month">月別</option>
-        </select>
+        <select id="graph-topic" onchange="renderPredictionGraph()" style="background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:4px 8px;font-size:11px"><option value="">トピックを選択</option></select>
+        <select id="graph-unit" onchange="renderPredictionGraph()" style="background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:4px 8px;font-size:11px"><option value="day">日別</option><option value="month">月別</option></select>
       </div>
     </div>
-    <!-- セグメントフィルター -->
     <div id="graph-segments" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px"></div>
-    <div id="prediction-graph-wrap">
-      <p class="empty">トピックを選択してください</p>
-    </div>
-    <!-- セグメント別凡例 -->
+    <div id="prediction-graph-wrap"><p class="empty">トピックを選択してください</p></div>
     <div id="graph-legend" style="display:flex;gap:16px;flex-wrap:wrap;margin-top:10px"></div>
   </div>
 </div>
 
-<!-- ユーザー管理 -->
 <div id="tab-users" class="tab-content">
   <div id="users-list"></div>
 </div>
 
-<!-- トピック管理 -->
 <div id="tab-topics" class="tab-content">
+  <div class="post-form">
+    <div class="post-form-title">✏️ 新しいトピックを投稿</div>
+    <div class="form-row">
+      <label>カテゴリ</label>
+      <select id="new-category">
+        <option value="経済・金融">💹 経済・金融</option>
+        <option value="AI・テクノロジー">🤖 AI・テクノロジー</option>
+        <option value="政治・社会">🏛 政治・社会</option>
+        <option value="未確認現象・予言">🔮 未確認現象・予言</option>
+        <option value="スポーツ・エンタメ">⚽ スポーツ・エンタメ</option>
+      </select>
+    </div>
+    <div class="form-row">
+      <label>質問文（YES/NOで答えられる形式）</label>
+      <textarea id="new-question" placeholder="例：〇〇は2027年末までに△△を達成しますか？" maxlength="100"></textarea>
+    </div>
+    <div class="form-row">
+      <label>判定基準（任意）</label>
+      <input type="text" id="new-judge" placeholder="例：公式発表があった場合YES" maxlength="100">
+    </div>
+    <div class="form-row">
+      <label>締切</label>
+      <select id="new-deadline">
+        <option value="今週末">今週末</option>
+        <option value="2週間後">2週間後</option>
+        <option value="今月末">今月末</option>
+        <option value="3ヶ月後">3ヶ月後</option>
+        <option value="2026年12月末" selected>2026年12月末</option>
+        <option value="2027年12月末">2027年12月末</option>
+        <option value="2030年末">2030年末</option>
+      </select>
+    </div>
+    <div class="form-row-inline">
+      <label><input type="checkbox" id="new-sponsored" onchange="togglePrizeRow()"> スポンサー投稿にする</label>
+    </div>
+    <div class="prize-row" id="prize-row">
+      <label>賞金額（円）</label>
+      <input type="number" id="new-prize" placeholder="例: 5000" min="0">
+    </div>
+    <button class="post-btn" id="post-btn" onclick="postTopic()">投稿する</button>
+  </div>
   <div id="topics-list"></div>
 </div>
 
