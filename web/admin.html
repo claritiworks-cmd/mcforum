@@ -175,7 +175,12 @@ function renderTopics() {
     const genderRows = Object.entries(byGender).map(([g,d]) => { const tot=(d.yes||0)+(d.no||0); const yp=tot>0?((d.yes||0)/tot*100).toFixed(0):'-'; return `<span class="attr-tag">${g}: YES${yp}%</span>`; }).join('');
     const ageRows = Object.entries(byAge).map(([a,d]) => { const tot=(d.yes||0)+(d.no||0); const yp=tot>0?((d.yes||0)/tot*100).toFixed(0):'-'; return `<span class="attr-tag">${a}: YES${yp}%</span>`; }).join('');
     const status = t.resolved ? `<span class="badge-resolved">${t.actualResult==='yes'?'✓ YES的中':'✓ NO的中'}</span>` : `<span class="badge-pending">判定待ち</span>`;
-    const actionBtns = !t.resolved ? `<button class="btn-yes" onclick="resolveAdmin('${t.id}','yes')">YES 的中</button><button class="btn-no" onclick="resolveAdmin('${t.id}','no')">NO 的中</button>` : '';
+    const actionBtns = !t.resolved ? `
+      <button class="btn-yes" onclick="resolveAdmin('${t.id}','yes')">YES 的中</button>
+      <button class="btn-no" onclick="resolveAdmin('${t.id}','no')">NO 的中</button>
+      <button onclick="openEditTopic('${t.id}')" style="padding:7px 18px;background:rgba(59,91,219,.1);color:#3b5bdb;border:1px solid #3b5bdb;border-radius:7px;font-size:12px;font-weight:700;cursor:pointer">編集</button>
+    ` : `<button onclick="openEditTopic('${t.id}')" style="padding:7px 18px;background:rgba(59,91,219,.1);color:#3b5bdb;border:1px solid #3b5bdb;border-radius:7px;font-size:12px;font-weight:700;cursor:pointer;margin-top:8px">編集</button>`;
+
     return `<div class="topic-card ${t.resolved?'resolved':''}"><div class="topic-header"><span class="topic-cat">${t.category||''}</span>${status}${t.sponsored?'<span class="badge-sponsored">SPONSORED</span>':''}</div><div class="topic-q">${t.question}</div>${t.judgeCondition?`<div class="judge-condition">⚖️ ${t.judgeCondition}</div>`:''}<div class="topic-meta"><span>投稿者: ${t.authorName||'不明'}</span><span>締切: ${t.deadline||''}</span><span>予測数: ${total}</span><span style="color:#3b5bdb">影響力: ${(t.authorInfluenceScore||0).toFixed(1)}</span></div><div class="vote-row"><div class="vote-bars"><div class="vb-row"><span class="vb-lbl yes">YES</span><div class="vb-wrap"><div class="vb-fill yes" style="width:${yesPct}%"></div></div><span class="vb-pct">${yesPct}%</span></div><div class="vb-row"><span class="vb-lbl no">NO</span><div class="vb-wrap"><div class="vb-fill no" style="width:${100-yesPct}%"></div></div><span class="vb-pct">${100-yesPct}%</span></div></div><div class="attr-breakdown">${genderRows?`<div><small>性別別:</small> ${genderRows}</div>`:''}${ageRows?`<div><small>年代別:</small> ${ageRows}</div>`:''}</div></div>${actionBtns?`<div class="action-row">${actionBtns}</div>`:''}</div>`;
   }).join('');
   document.getElementById('topics-list').innerHTML = html || '<p class="empty">トピックなし</p>';
@@ -184,40 +189,82 @@ function renderTopics() {
 window.postTopic = async () => {
   const question = document.getElementById('new-question').value.trim();
   const category = document.getElementById('new-category').value;
-  const deadline = document.getElementById('new-deadline').value;
   const judgeCondition = document.getElementById('new-judge').value.trim();
   const isSponsored = document.getElementById('new-sponsored').checked;
   const prize = isSponsored ? parseInt(document.getElementById('new-prize').value || '0') : 0;
   if (!question) { alert('質問文を入力してください'); return; }
   const btn = document.getElementById('post-btn');
-  btn.disabled = true; btn.textContent = '投稿中...';
+  btn.disabled = true;
+
   try {
-    const adminUser = allUsers.find(u => u.id === ADMIN_UID);
-    const adminName = adminUser?.name || 'MC forum';
-    await addDoc(collection(db, 'topics'), {
-      question, category, deadline, judgeCondition,
-      questionEn: '', judgeConditionEn: '',
-      authorUid: ADMIN_UID, authorName: adminName,
-      authorInfluenceScore: adminUser?.influence_score || 0,
-      sponsored: isSponsored, prize,
-      yesCount: 0, noCount: 0, commentCount: 0,
-      resolved: false, actualResult: null,
-      createdAt: serverTimestamp(),
-    });
-    alert('✅ トピックを投稿しました');
-    document.getElementById('new-question').value = '';
-    document.getElementById('new-judge').value = '';
-    document.getElementById('new-sponsored').checked = false;
-    document.getElementById('new-prize').value = '';
-    document.getElementById('prize-row').style.display = 'none';
+    if (editingTopicId) {
+      btn.textContent = '更新中...';
+      await updateDoc(doc(db, 'topics', editingTopicId), {
+        question, category, judgeCondition,
+        sponsored: isSponsored, prize,
+      });
+      alert('✅ トピックを更新しました');
+      cancelEdit();
+    } else {
+      btn.textContent = '投稿中...';
+      const adminUser = allUsers.find(u => u.id === ADMIN_UID);
+      const adminName = adminUser?.name || 'MC forum';
+      await addDoc(collection(db, 'topics'), {
+        question, category, deadline: '未設定', judgeCondition,
+        questionEn: '', judgeConditionEn: '',
+        authorUid: ADMIN_UID, authorName: adminName,
+        authorInfluenceScore: adminUser?.influence_score || 0,
+        sponsored: isSponsored, prize,
+        yesCount: 0, noCount: 0, commentCount: 0,
+        resolved: false, actualResult: null,
+        createdAt: serverTimestamp(),
+      });
+      alert('✅ トピックを投稿しました');
+      document.getElementById('new-question').value = '';
+      document.getElementById('new-judge').value = '';
+      document.getElementById('new-sponsored').checked = false;
+      document.getElementById('new-prize').value = '';
+      document.getElementById('prize-row').style.display = 'none';
+    }
     loadData();
   } catch(e) { alert('エラー: ' + e.message); }
-  btn.disabled = false; btn.textContent = '投稿する';
+  btn.disabled = false;
+  btn.textContent = editingTopicId ? '更新する' : '投稿する';
 };
+
 
 window.togglePrizeRow = () => {
   const checked = document.getElementById('new-sponsored').checked;
   document.getElementById('prize-row').style.display = checked ? 'flex' : 'none';
+};
+let editingTopicId = null;
+
+window.openEditTopic = (topicId) => {
+  const t = allTopics.find(t => t.id === topicId);
+  if (!t) return;
+  editingTopicId = topicId;
+  document.getElementById('new-category').value = t.category || '経済・金融';
+  document.getElementById('new-question').value = t.question || '';
+  document.getElementById('new-judge').value = t.judgeCondition || '';
+  document.getElementById('new-sponsored').checked = !!t.sponsored;
+  document.getElementById('new-prize').value = t.prize || '';
+  togglePrizeRow();
+  document.getElementById('post-btn').textContent = '更新する';
+  document.getElementById('post-form-title-text').textContent = '✏️ トピックを編集';
+  document.getElementById('cancel-edit-btn').style.display = 'inline-block';
+  document.querySelector('.post-form').scrollIntoView({behavior:'smooth'});
+};
+
+window.cancelEdit = () => {
+  editingTopicId = null;
+  document.getElementById('new-question').value = '';
+  document.getElementById('new-judge').value = '';
+  document.getElementById('new-sponsored').checked = false;
+  document.getElementById('new-prize').value = '';
+  togglePrizeRow();
+  document.getElementById('post-btn').textContent = '投稿する';
+  document.getElementById('post-form-title-text').textContent = '✏️ 新しいトピックを投稿';
+  document.getElementById('cancel-edit-btn').style.display = 'none';
 };
 
 window.resolveAdmin = async (topicId, result) => {
@@ -580,7 +627,10 @@ body{background:var(--bg);color:var(--text);font-family:'Noto Sans JP','Space Gr
 
 <div id="tab-topics" class="tab-content">
   <div class="post-form">
-    <div class="post-form-title">✏️ 新しいトピックを投稿</div>
+    <div class="post-form-title" style="display:flex;align-items:center;gap:10px">
+      <span id="post-form-title-text">✏️ 新しいトピックを投稿</span>
+      <button id="cancel-edit-btn" onclick="cancelEdit()" style="display:none;padding:4px 12px;background:transparent;color:#5a6172;border:1px solid #e3e7ee;border-radius:6px;font-size:11px;cursor:pointer">キャンセル</button>
+    </div>
     <div class="form-row">
       <label>カテゴリ</label>
       <select id="new-category">
@@ -598,18 +648,6 @@ body{background:var(--bg);color:var(--text);font-family:'Noto Sans JP','Space Gr
     <div class="form-row">
       <label>判定基準（任意）</label>
       <input type="text" id="new-judge" placeholder="例：公式発表があった場合YES" maxlength="100">
-    </div>
-    <div class="form-row">
-      <label>締切</label>
-      <select id="new-deadline">
-        <option value="今週末">今週末</option>
-        <option value="2週間後">2週間後</option>
-        <option value="今月末">今月末</option>
-        <option value="3ヶ月後">3ヶ月後</option>
-        <option value="2026年12月末" selected>2026年12月末</option>
-        <option value="2027年12月末">2027年12月末</option>
-        <option value="2030年末">2030年末</option>
-      </select>
     </div>
     <div class="form-row-inline">
       <label><input type="checkbox" id="new-sponsored" onchange="togglePrizeRow()"> スポンサー投稿にする</label>
