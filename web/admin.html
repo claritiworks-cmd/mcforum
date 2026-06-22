@@ -24,19 +24,21 @@ const app = initializeApp(FIREBASE_CONFIG);
 const db = getFirestore(app);
 const auth = getAuth(app);
 
-let allUsers = [], allTopics = [], allPredictions = [];
+let allUsers = [], allTopics = [], allPredictions = [], allFeedback = [];
 
 async function loadData() {
   document.getElementById('loading').style.display = 'flex';
   try {
-    const [us, ts, ps] = await Promise.all([
+    const [us, ts, ps, fs] = await Promise.all([
       getDocs(collection(db, 'users')),
       getDocs(query(collection(db, 'topics'), orderBy('createdAt', 'desc'))),
-      getDocs(collection(db, 'predictions'))
+      getDocs(collection(db, 'predictions')),
+      getDocs(collection(db, 'feedback'))
     ]);
     allUsers = us.docs.map(d => ({id: d.id, ...d.data()}));
     allTopics = ts.docs.map(d => ({id: d.id, ...d.data()}));
     allPredictions = ps.docs.map(d => ({id: d.id, ...d.data()}));
+    allFeedback = fs.docs.map(d => ({id: d.id, ...d.data()}));
     renderAll();
   } catch(e) { showError(e.message); }
   document.getElementById('loading').style.display = 'none';
@@ -47,6 +49,7 @@ function renderAll() {
   renderB2BData();
   renderUsers();
   renderTopics();
+  renderFeedback();
   populateTopicSelect();
 }
 
@@ -156,7 +159,7 @@ function renderUsers() {
       return `<span class="acc-tag" style="color:${color}">${cat}: ${rate}% (${d.total}件)</span>`;
     }).join('');
     const demo = [u.age&&`<span class="demo-chip">${u.age}</span>`,u.gender&&`<span class="demo-chip">${u.gender}</span>`,u.prefecture&&`<span class="demo-chip">${u.prefecture}</span>`,u.job&&`<span class="demo-chip">${u.job}</span>`].filter(Boolean).join('');
-    return `<div class="user-row"><div class="user-row-header"><div class="avatar" style="background:${u.color||'#3b5bdb'}">${(u.name||'?')[0].toUpperCase()}</div><div class="user-row-info"><span class="user-row-name">${u.name||'不明'}</span><span class="user-row-id">${u.id}</span></div><div class="user-row-stats"><span class="influence-score">${(u.influence_score||0).toFixed(1)}pt</span><span class="total-votes">${u.totalVotes||0}予測</span><span class="points">${u.points||0}pt保有</span></div><div><button class="premium-btn ${u.isPremium?'active':''}" onclick="togglePremium('${u.id}', ${!u.isPremium})">${u.isPremium?'⭐ Premium':'Premium化'}</button></div></div>${demo?`<div class="demo-tags">${demo}</div>`:''}${(u.expertise||[]).length?`<div class="expertise-tags">${(u.expertise||[]).map(e=>`<span class="exp-tag">${e}</span>`).join('')}</div>`:''}${accRows?`<div class="acc-tags">${accRows}</div>`:''}</div>`;
+    return `<div class="user-row"><div class="user-row-header"><div class="avatar" style="background:${u.color||'#3b5bdb'}">${(u.name||'?')[0].toUpperCase()}</div><div class="user-row-info"><span class="user-row-name">${u.name||'不明'}</span><span class="user-row-id">${u.id}</span></div><div class="user-row-stats"><span class="influence-score">${(u.influence_score||0).toFixed(1)}pt</span><span class="total-votes">${u.totalVotes||0}予測</span><span class="points">${u.points||0}特別pt</span><span class="points" style="color:#7048e8">${u.honorPoints||0}MC</span></div><div><button class="premium-btn ${u.isPremium?'active':''}" onclick="togglePremium('${u.id}', ${!u.isPremium})">${u.isPremium?'⭐ Premium':'Premium化'}</button></div></div>${demo?`<div class="demo-tags">${demo}</div>`:''}${(u.expertise||[]).length?`<div class="expertise-tags">${(u.expertise||[]).map(e=>`<span class="exp-tag">${e}</span>`).join('')}</div>`:''}${accRows?`<div class="acc-tags">${accRows}</div>`:''}</div>`;
   }).join('');
   document.getElementById('users-list').innerHTML = html || '<p class="empty">ユーザーなし</p>';
 }
@@ -190,6 +193,7 @@ window.postTopic = async () => {
   const question = document.getElementById('new-question').value.trim();
   const category = document.getElementById('new-category').value;
   const judgeCondition = document.getElementById('new-judge').value.trim();
+  const deadline = document.getElementById('new-deadline').value || '未設定';
   const isSponsored = document.getElementById('new-sponsored').checked;
   const prize = isSponsored ? parseInt(document.getElementById('new-prize').value || '0') : 0;
   if (!question) { alert('質問文を入力してください'); return; }
@@ -200,7 +204,7 @@ window.postTopic = async () => {
     if (editingTopicId) {
       btn.textContent = '更新中...';
       await updateDoc(doc(db, 'topics', editingTopicId), {
-        question, category, judgeCondition,
+        question, category, judgeCondition, deadline,
         sponsored: isSponsored, prize,
       });
       alert('✅ トピックを更新しました');
@@ -210,7 +214,7 @@ window.postTopic = async () => {
       const adminUser = allUsers.find(u => u.id === ADMIN_UID);
       const adminName = adminUser?.name || 'MC forum';
       await addDoc(collection(db, 'topics'), {
-        question, category, deadline: '未設定', judgeCondition,
+        question, category, deadline, judgeCondition,
         questionEn: '', judgeConditionEn: '',
         authorUid: ADMIN_UID, authorName: adminName,
         authorInfluenceScore: adminUser?.influence_score || 0,
@@ -222,6 +226,7 @@ window.postTopic = async () => {
       alert('✅ トピックを投稿しました');
       document.getElementById('new-question').value = '';
       document.getElementById('new-judge').value = '';
+      document.getElementById('new-deadline').value = '';
       document.getElementById('new-sponsored').checked = false;
       document.getElementById('new-prize').value = '';
       document.getElementById('prize-row').style.display = 'none';
@@ -246,6 +251,7 @@ window.openEditTopic = (topicId) => {
   document.getElementById('new-category').value = t.category || '経済・金融';
   document.getElementById('new-question').value = t.question || '';
   document.getElementById('new-judge').value = t.judgeCondition || '';
+  document.getElementById('new-deadline').value = (t.deadline && t.deadline !== '未設定') ? t.deadline : '';
   document.getElementById('new-sponsored').checked = !!t.sponsored;
   document.getElementById('new-prize').value = t.prize || '';
   togglePrizeRow();
@@ -259,6 +265,7 @@ window.cancelEdit = () => {
   editingTopicId = null;
   document.getElementById('new-question').value = '';
   document.getElementById('new-judge').value = '';
+  document.getElementById('new-deadline').value = '';
   document.getElementById('new-sponsored').checked = false;
   document.getElementById('new-prize').value = '';
   togglePrizeRow();
@@ -268,16 +275,20 @@ window.cancelEdit = () => {
 };
 
 window.resolveAdmin = async (topicId, result) => {
-  if (!confirm(`「${result.toUpperCase()}が的中」として確定しますか？`)) return;
+  if (!confirm(`「${result.toUpperCase()}が的中」として確定しますか？\n\n※的中者には賭けMCの1.8倍が払い戻されます`)) return;
   try {
     await updateDoc(doc(db, 'topics', topicId), {resolved: true, actualResult: result});
     const preds = allPredictions.filter(p => p.topicId === topicId);
     for (const pred of preds) {
       const uid = pred.uid; if (!uid) continue;
+      // 既に精算済みの予測はスキップ（二重精算防止）
+      if (pred.resolved === true) continue;
       const isCorrect = pred.prediction_value === result;
       await updateDoc(doc(db, 'predictions', pred.id), {resolved: true});
       const userDoc = await getDoc(doc(db, 'users', uid));
       const userData = userDoc.data(); if (!userData) continue;
+
+      // 的中率・影響力スコア
       const acc = {...(userData.accuracy_by_category||{})};
       const cat = pred.category || '';
       const catData = {correct:0,total:0,...(acc[cat]||{})};
@@ -286,9 +297,31 @@ window.resolveAdmin = async (topicId, result) => {
       let totalC=0, totalA=0;
       Object.values(acc).forEach(c=>{totalC+=c.correct||0;totalA+=c.total||0;});
       const influenceScore = totalA>0 ? (totalC/totalA)*(1+totalA*0.1)*100 : 0;
-      await updateDoc(doc(db,'users',uid), {accuracy_by_category:acc, influence_score:influenceScore});
+
+      // ユーザー更新オブジェクト（main.dart の _resolveTopicAndUpdateScores と一致）
+      const userUpdate = {accuracy_by_category:acc, influence_score:influenceScore};
+
+      // 賭けMC精算（A方式：賭け額は投票時に引き落とし済み）
+      //  的中 → betPoints×1.8 を honorPoints に払い戻し
+      //  外れ → 何もしない（投票時の引き落としがそのまま没収）
+      const betPoints = pred.bet_points || 0;
+      if (betPoints > 0 && isCorrect) {
+        const payout = Math.round(betPoints * 1.8);
+        userUpdate.honorPoints = (userData.honorPoints || 0) + payout;
+      }
+
+      // 確信度キャリブレーション（main.dart と一致：10刻みバケット）
+      const confidence = pred.confidence || 50;
+      const bucket = Math.floor(confidence / 10) * 10;
+      const calibration = {...(userData.calibration||{})};
+      const bucketData = {correct:0,total:0,...(calibration[bucket]||{})};
+      bucketData.total++; if (isCorrect) bucketData.correct++;
+      calibration[bucket] = bucketData;
+      userUpdate.calibration = calibration;
+
+      await updateDoc(doc(db,'users',uid), userUpdate);
     }
-    alert('✅ 結果を確定しました'); loadData();
+    alert('✅ 結果を確定し、賭けMCを精算しました'); loadData();
   } catch(e) { alert('エラー: '+e.message); }
 };
 
@@ -296,6 +329,61 @@ window.togglePremium = async (uid, isPremium) => {
   try {
     await updateDoc(doc(db,'users',uid), {isPremium});
     alert(isPremium ? '⭐ Premiumに設定しました' : 'Premiumを解除しました');
+    loadData();
+  } catch(e) { alert('エラー: '+e.message); }
+};
+
+function renderFeedback() {
+  // 新しい順にソート
+  const sorted = [...allFeedback].sort((a,b) => {
+    const ta = a.createdAt?.toDate ? a.createdAt.toDate().getTime() : 0;
+    const tb = b.createdAt?.toDate ? b.createdAt.toDate().getTime() : 0;
+    return tb - ta;
+  });
+  const unreplied = sorted.filter(f => !f.replied).length;
+  const badge = document.getElementById('feedback-badge');
+  if (badge) {
+    badge.textContent = unreplied;
+    badge.style.display = unreplied > 0 ? 'inline-flex' : 'none';
+  }
+
+  const html = sorted.map(f => {
+    const date = f.createdAt?.toDate ? f.createdAt.toDate().toLocaleString('ja-JP') : '日時不明';
+    const replied = !!f.replied;
+    const replyDate = f.repliedAt?.toDate ? f.repliedAt.toDate().toLocaleString('ja-JP') : '';
+    const msg = (f.message || '').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    const reply = (f.reply || '').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    return `<div class="fb-card ${replied?'fb-replied':''}">
+      <div class="fb-header">
+        <div class="fb-user">
+          <span class="fb-name">${f.userName || '匿名ユーザー'}</span>
+          <span class="fb-uid">${f.uid || ''}</span>
+        </div>
+        <div class="fb-status">${replied ? '<span class="fb-badge-done">✓ 返信済み</span>' : '<span class="fb-badge-new">未返信</span>'}</div>
+      </div>
+      <div class="fb-date">${date}</div>
+      <div class="fb-message">${msg}</div>
+      ${replied ? `<div class="fb-reply-shown"><div class="fb-reply-label">返信内容（${replyDate}）</div><div class="fb-reply-text">${reply}</div></div>` : ''}
+      <div class="fb-reply-area">
+        <textarea id="reply-${f.id}" class="fb-reply-input" placeholder="${replied ? '返信を修正する...' : 'ユーザーへの返信を入力...'}" rows="2">${reply}</textarea>
+        <button class="fb-reply-btn" onclick="replyFeedback('${f.id}')">${replied ? '返信を更新' : '返信する'}</button>
+      </div>
+    </div>`;
+  }).join('');
+  document.getElementById('feedback-list').innerHTML = html || '<p class="empty">お問い合わせはありません</p>';
+}
+
+window.replyFeedback = async (feedbackId) => {
+  const ta = document.getElementById(`reply-${feedbackId}`);
+  const replyText = ta.value.trim();
+  if (!replyText) { alert('返信内容を入力してください'); return; }
+  try {
+    await updateDoc(doc(db, 'feedback', feedbackId), {
+      reply: replyText,
+      replied: true,
+      repliedAt: serverTimestamp(),
+    });
+    alert('✅ 返信を保存しました。ユーザーのマイページに表示されます');
     loadData();
   } catch(e) { alert('エラー: '+e.message); }
 };
@@ -540,6 +628,24 @@ body{background:var(--bg);color:var(--text);font-family:'Noto Sans JP','Space Gr
 #auth-gate{display:flex;align-items:center;justify-content:center;min-height:100vh;flex-direction:column;gap:12px}
 #auth-gate p{color:var(--soft);font-size:13px}
 @media(max-width:900px){.stats-grid{grid-template-columns:repeat(3,1fr)}.grid-2{grid-template-columns:1fr}}
+.tab-badge{display:inline-flex;align-items:center;justify-content:center;min-width:18px;height:18px;padding:0 5px;background:var(--red);color:#fff;border-radius:9px;font-size:10px;font-weight:800;margin-left:4px}
+.fb-card{background:var(--card2);border:1px solid var(--border);border-left:3px solid var(--red);border-radius:10px;padding:14px;margin-bottom:12px}
+.fb-card.fb-replied{border-left-color:var(--green)}
+.fb-header{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:4px}
+.fb-user{display:flex;flex-direction:column}
+.fb-name{font-size:13px;font-weight:800;color:var(--text)}
+.fb-uid{font-size:10px;color:var(--faint);font-family:monospace}
+.fb-badge-new{font-size:10px;font-weight:800;color:var(--red);background:rgba(232,89,12,.1);padding:3px 9px;border-radius:6px}
+.fb-badge-done{font-size:10px;font-weight:800;color:var(--green);background:rgba(12,166,120,.1);padding:3px 9px;border-radius:6px}
+.fb-date{font-size:10px;color:var(--faint);margin-bottom:8px}
+.fb-message{font-size:13px;color:var(--text);line-height:1.6;white-space:pre-wrap;background:var(--card);padding:10px;border-radius:8px;border:1px solid var(--border)}
+.fb-reply-shown{margin-top:10px;background:rgba(12,166,120,.06);border:1px solid rgba(12,166,120,.2);border-radius:8px;padding:10px}
+.fb-reply-label{font-size:10px;font-weight:700;color:var(--green);margin-bottom:4px}
+.fb-reply-text{font-size:12px;color:var(--text);line-height:1.5;white-space:pre-wrap}
+.fb-reply-area{margin-top:10px;display:flex;gap:8px;align-items:flex-end}
+.fb-reply-input{flex:1;background:var(--card);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:9px;font-size:12px;font-family:inherit;resize:vertical}
+.fb-reply-btn{padding:9px 18px;background:var(--blue);color:#fff;border:none;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer;white-space:nowrap}
+.fb-reply-btn:hover{opacity:.9}
 </style>
 </head>
 <body>
@@ -563,6 +669,7 @@ body{background:var(--bg);color:var(--text);font-family:'Noto Sans JP','Space Gr
   <button class="tab-btn" data-tab="b2b" onclick="switchTab('b2b')">💼 B2Bデータ分析</button>
   <button class="tab-btn" data-tab="users" onclick="switchTab('users')">👥 予測者管理</button>
   <button class="tab-btn" data-tab="topics" onclick="switchTab('topics')">🎯 トピック管理</button>
+  <button class="tab-btn" data-tab="feedback" onclick="switchTab('feedback')">📨 お問い合わせ <span id="feedback-badge" class="tab-badge" style="display:none">0</span></button>
 </div>
 <div class="wrap">
 
@@ -649,6 +756,10 @@ body{background:var(--bg);color:var(--text);font-family:'Noto Sans JP','Space Gr
       <label>判定基準（任意）</label>
       <input type="text" id="new-judge" placeholder="例：公式発表があった場合YES" maxlength="100">
     </div>
+    <div class="form-row">
+      <label>締切日</label>
+      <input type="date" id="new-deadline" style="background:var(--card2);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:10px;font-size:13px;font-family:inherit">
+    </div>
     <div class="form-row-inline">
       <label><input type="checkbox" id="new-sponsored" onchange="togglePrizeRow()"> スポンサー投稿にする</label>
     </div>
@@ -659,6 +770,14 @@ body{background:var(--bg);color:var(--text);font-family:'Noto Sans JP','Space Gr
     <button class="post-btn" id="post-btn" onclick="postTopic()">投稿する</button>
   </div>
   <div id="topics-list"></div>
+</div>
+
+<div id="tab-feedback" class="tab-content">
+  <div class="panel">
+    <div class="panel-title">📨 ユーザーからのお問い合わせ・不具合報告</div>
+    <p style="font-size:11px;color:var(--soft);margin-bottom:14px">返信するとユーザーのマイページ「お問い合わせ履歴」に表示されます。</p>
+    <div id="feedback-list"></div>
+  </div>
 </div>
 
 </div>
